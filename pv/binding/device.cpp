@@ -126,6 +126,10 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 				bind_int(name, "", "", pair<int64_t, int64_t>(1, 500), get, set);
 			break;
 
+		case SR_CONF_HOLDOFF:
+			bind_int(name, "", "", pair<int64_t, int64_t>(0, 100000), get, set);
+			break;
+
 		default:
 			break;
 		}
