@@ -104,6 +104,7 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 		case SR_CONF_EXTERNAL_CLOCK:
 		case SR_CONF_RLE:
 		case SR_CONF_POWER_OFF:
+		case SR_CONF_REPEAT_TRIGGER:
 			bind_bool(name, "", get, set);
 			break;
 
@@ -129,7 +130,7 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 		case SR_CONF_HOLDOFF:
 			bind_int(name, "", "", pair<int64_t, int64_t>(0, 100000), get, set);
 			break;
-
+			
 		default:
 			break;
 		}

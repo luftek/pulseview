@@ -884,9 +884,11 @@ void View::trigger_event(int segment_id, util::Timestamp location)
 	bool trigger_is_zero_time = settings.value(GlobalSettings::Key_View_TriggerIsZeroTime).toBool();
 
 	size_t trigger_count = session_.get_triggers(current_segment_).size();
-
+	
 	if (trigger_is_zero_time && trigger_count == 1)
 		set_zero_position(location);
+	else
+		set_offset(location);
 
 	trigger_markers_.push_back(make_shared<TriggerMarker>(*this, location));
 }
