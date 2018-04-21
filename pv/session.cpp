@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 
 #include "devicemanager.hpp"
+#include "mainwindow.hpp"
 #include "session.hpp"
 
 #include "data/analog.hpp"
@@ -299,8 +300,9 @@ void Session::restore_settings(QSettings &settings)
 				filename.toStdString());
 			set_device(device);
 
-			// TODO Perform error handling
-			start_capture([](QString infoMessage) { (void)infoMessage; });
+			start_capture([](QString infoMessage) {
+				// TODO Emulate noquote()
+				qDebug() << "Session error:" << infoMessage; });
 
 			set_name(QFileInfo(filename).fileName());
 		}
@@ -352,7 +354,7 @@ void Session::select_device(shared_ptr<devices::Device> device)
 		else
 			set_default_device();
 	} catch (const QString &e) {
-		main_bar_->session_error(tr("Failed to select device"), e);
+		MainWindow::show_session_error(tr("Failed to select device"), e);
 	}
 }
 
@@ -400,7 +402,7 @@ void Session::set_device(shared_ptr<devices::Device> device)
 		device_->open();
 	} catch (const QString &e) {
 		device_.reset();
-		main_bar_->session_error(tr("Failed to open device"), e);
+		MainWindow::show_session_error(tr("Failed to open device"), e);
 	}
 
 	if (device_) {
@@ -490,7 +492,7 @@ void Session::load_init_file(const string &file_name, const string &format)
 			[&](const pair<string, shared_ptr<InputFormat> > f) {
 				return f.first == user_name; });
 		if (iter == formats.end()) {
-			main_bar_->session_error(tr("Error"),
+			MainWindow::show_session_error(tr("Error"),
 				tr("Unexpected input format: %s").arg(QString::fromStdString(format)));
 			return;
 		}
@@ -522,7 +524,7 @@ void Session::load_file(QString file_name,
 					device_manager_.context(),
 					file_name.toStdString())));
 	} catch (Error& e) {
-		main_bar_->session_error(tr("Failed to load ") + file_name, e.what());
+		MainWindow::show_session_error(tr("Failed to load ") + file_name, e.what());
 		set_default_device();
 		main_bar_->update_device_list();
 		return;
@@ -531,7 +533,7 @@ void Session::load_file(QString file_name,
 	main_bar_->update_device_list();
 
 	start_capture([&, errorMessage](QString infoMessage) {
-		main_bar_->session_error(errorMessage, infoMessage); });
+		MainWindow::show_session_error(errorMessage, infoMessage); });
 
 	set_name(QFileInfo(file_name).fileName());
 }
@@ -953,10 +955,8 @@ void Session::sample_thread_proc(function<void (const QString)> error_handler)
 	set_capture_state(Stopped);
 
 	// Confirm that SR_DF_END was received
-	if (cur_logic_segment_) {
-		qDebug("SR_DF_END was not received.");
-		assert(false);
-	}
+	if (cur_logic_segment_)
+		qDebug() << "WARNING: SR_DF_END was not received.";
 
 	// Optimize memory usage
 	free_unused_memory();
@@ -1132,6 +1132,11 @@ void Session::feed_in_frame_end()
 
 void Session::feed_in_logic(shared_ptr<Logic> logic)
 {
+	if (logic->data_length() == 0) {
+		qDebug() << "WARNING: Received logic packet with 0 samples.";
+		return;
+	}
+
 	if (!cur_samplerate_)
 		cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
 
@@ -1164,6 +1169,11 @@ void Session::feed_in_logic(shared_ptr<Logic> logic)
 
 void Session::feed_in_analog(shared_ptr<Analog> analog)
 {
+	if (analog->num_samples() == 0) {
+		qDebug() << "WARNING: Received analog packet with 0 samples.";
+		return;
+	}
+
 	if (!cur_samplerate_)
 		cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
 

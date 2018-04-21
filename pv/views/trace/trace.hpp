@@ -88,8 +88,8 @@ private:
 	static const QPen AxisPen;
 	static const int LabelHitPadding;
 
-	static const QColor BrightGrayBGColour;
-	static const QColor DarkGrayBGColour;
+	static const QColor BrightGrayBGColor;
+	static const QColor DarkGrayBGColor;
 
 protected:
 	Trace(shared_ptr<data::SignalBase> channel);
@@ -99,16 +99,6 @@ public:
 	 * Returns the underlying SignalBase instance.
 	 */
 	shared_ptr<data::SignalBase> base() const;
-
-	/**
-	 * Sets the name of the signal.
-	 */
-	virtual void set_name(QString name);
-
-	/**
-	 * Set the colour of the signal.
-	 */
-	virtual void set_colour(QColor colour);
 
 	/**
 	 * Configures the segment display mode to use.
@@ -154,7 +144,7 @@ protected:
 	 */
 	void paint_axis(QPainter &p, ViewItemPaintParams &pp, int y);
 
-	void add_colour_option(QWidget *parent, QFormLayout *form);
+	void add_color_option(QWidget *parent, QFormLayout *form);
 
 	void create_popup_form();
 
@@ -163,14 +153,14 @@ protected:
 protected Q_SLOTS:
 	virtual void on_name_changed(const QString &text);
 
-	virtual void on_colour_changed(const QColor &colour);
+	virtual void on_color_changed(const QColor &color);
 
 	void on_popup_closed();
 
 private Q_SLOTS:
 	void on_nameedit_changed(const QString &name);
 
-	void on_colouredit_changed(const QColor &colour);
+	void on_coloredit_changed(const QColor &color);
 
 protected:
 	shared_ptr<data::SignalBase> base_;

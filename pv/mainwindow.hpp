@@ -75,6 +75,8 @@ public:
 
 	~MainWindow();
 
+	static void show_session_error(const QString text, const QString info_text);
+
 	shared_ptr<views::ViewBase> get_active_view() const;
 
 	shared_ptr<views::ViewBase> add_view(const QString &title,
@@ -109,11 +111,7 @@ private:
 
 	virtual bool restoreState(const QByteArray &state, int version = 0);
 
-	void session_error(const QString text, const QString info_text);
-
 private Q_SLOTS:
-	void show_session_error(const QString text, const QString info_text);
-
 	void on_add_view(const QString &title, views::ViewType type,
 		Session *session);
 
@@ -133,12 +131,12 @@ private Q_SLOTS:
 	void on_tab_changed(int index);
 	void on_tab_close_requested(int index);
 
-	void on_view_coloured_bg_shortcut();
+	void on_view_colored_bg_shortcut();
 	void on_view_sticky_scrolling_shortcut();
 	void on_view_show_sampling_points_shortcut();
 	void on_view_show_analog_minor_grid_shortcut();
 
-	void on_settingViewColouredBg_changed(const QVariant new_value);
+	void on_settingViewColoredBg_changed(const QVariant new_value);
 	void on_settingViewShowSamplingPoints_changed(const QVariant new_value);
 	void on_settingViewShowAnalogMinorGrid_changed(const QVariant new_value);
 
@@ -166,7 +164,7 @@ private:
 	QShortcut *view_sticky_scrolling_shortcut_;
 	QShortcut *view_show_sampling_points_shortcut_;
 	QShortcut *view_show_analog_minor_grid_shortcut_;
-	QShortcut *view_coloured_bg_shortcut_;
+	QShortcut *view_colored_bg_shortcut_;
 	QShortcut *run_stop_shortcut_;
 	QShortcut *close_application_shortcut_;
 	QShortcut *close_current_tab_shortcut_;

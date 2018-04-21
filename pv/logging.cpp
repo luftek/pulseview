@@ -28,6 +28,8 @@
 
 #include <QApplication>
 
+using std::lock_guard;
+
 namespace pv {
 
 Logging logging;
@@ -36,7 +38,7 @@ const int Logging::MAX_BUFFER_SIZE = 50000;
 
 Logging::~Logging()
 {
-	qInstallMessageHandler(0);
+	qInstallMessageHandler(nullptr);
 	sr_log_callback_set_default();
 #ifdef ENABLE_DECODE
 	srd_log_callback_set_default();
@@ -72,7 +74,9 @@ int Logging::get_log_level() const
 void Logging::set_log_level(int level)
 {
 	sr_log_loglevel_set(level);
+#ifdef ENABLE_DECODE
 	srd_log_loglevel_set(level);
+#endif
 }
 
 QString Logging::get_log() const
@@ -82,6 +86,8 @@ QString Logging::get_log() const
 
 void Logging::log(const QString &text, int source)
 {
+	lock_guard<mutex> log_lock(log_mutex_);
+
 	if (buffer_.size() >= buffer_size_)
 		buffer_.removeFirst();
 

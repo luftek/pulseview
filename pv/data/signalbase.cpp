@@ -41,7 +41,7 @@ using std::unique_lock;
 namespace pv {
 namespace data {
 
-const int SignalBase::ColourBGAlpha = 8 * 256 / 100;
+const int SignalBase::ColorBGAlpha = 8 * 256 / 100;
 const uint64_t SignalBase::ConversionBlockSize = 4096;
 const uint32_t SignalBase::ConversionDelay = 1000;  // 1 second
 
@@ -130,24 +130,24 @@ unsigned int SignalBase::logic_bit_index() const
 		return 0;
 }
 
-QColor SignalBase::colour() const
+QColor SignalBase::color() const
 {
-	return colour_;
+	return color_;
 }
 
-void SignalBase::set_colour(QColor colour)
+void SignalBase::set_color(QColor color)
 {
-	colour_ = colour;
+	color_ = color;
 
-	bgcolour_ = colour;
-	bgcolour_.setAlpha(ColourBGAlpha);
+	bgcolor_ = color;
+	bgcolor_.setAlpha(ColorBGAlpha);
 
-	colour_changed(colour);
+	color_changed(color);
 }
 
-QColor SignalBase::bgcolour() const
+QColor SignalBase::bgcolor() const
 {
-	return bgcolour_;
+	return bgcolor_;
 }
 
 void SignalBase::set_data(shared_ptr<pv::data::SignalData> data)
@@ -232,6 +232,33 @@ bool SignalBase::segment_is_complete(uint32_t segment_id) const
 			result = segments.at(segment_id)->is_complete();
 		} catch (out_of_range&) {
 			// Do nothing
+		}
+	}
+
+	return result;
+}
+
+bool SignalBase::has_samples() const
+{
+	bool result = false;
+
+	if (channel_type_ == AnalogChannel)
+	{
+		shared_ptr<Analog> data = dynamic_pointer_cast<Analog>(data_);
+		if (data) {
+			auto segments = data->analog_segments();
+			if ((segments.size() > 0) && (segments.front()->get_sample_count() > 0))
+				result = true;
+		}
+	}
+
+	if (channel_type_ == LogicChannel)
+	{
+		shared_ptr<Logic> data = dynamic_pointer_cast<Logic>(data_);
+		if (data) {
+			auto segments = data->logic_segments();
+			if ((segments.size() > 0) && (segments.front()->get_sample_count() > 0))
+				result = true;
 		}
 	}
 
@@ -403,7 +430,7 @@ void SignalBase::save_settings(QSettings &settings) const
 {
 	settings.setValue("name", name());
 	settings.setValue("enabled", enabled());
-	settings.setValue("colour", colour());
+	settings.setValue("color", color());
 	settings.setValue("conversion_type", (int)conversion_type_);
 
 	settings.setValue("conv_options", (int)(conversion_options_.size()));
@@ -417,18 +444,30 @@ void SignalBase::save_settings(QSettings &settings) const
 
 void SignalBase::restore_settings(QSettings &settings)
 {
-	set_name(settings.value("name").toString());
-	set_enabled(settings.value("enabled").toBool());
-	set_colour(settings.value("colour").value<QColor>());
-	set_conversion_type((ConversionType)settings.value("conversion_type").toInt());
+	if (settings.contains("name"))
+		set_name(settings.value("name").toString());
 
-	int conv_options = settings.value("conv_options").toInt();
+	if (settings.contains("enabled"))
+		set_enabled(settings.value("enabled").toBool());
+
+	if (settings.contains("color"))
+		set_color(settings.value("color").value<QColor>());
+
+	if (settings.contains("conversion_type"))
+		set_conversion_type((ConversionType)settings.value("conversion_type").toInt());
+
+	int conv_options = 0;
+	if (settings.contains("conv_options"))
+		conv_options = settings.value("conv_options").toInt();
 
 	if (conv_options)
 		for (int i = 0; i < conv_options; i++) {
-			QString key = settings.value(QString("conv_option%1_key").arg(i)).toString();
-			QVariant value = settings.value(QString("conv_option%1_value").arg(i));
-			conversion_options_[key] = value;
+			const QString key_id = QString("conv_option%1_key").arg(i);
+			const QString value_id = QString("conv_option%1_value").arg(i);
+
+			if (settings.contains(key_id) && settings.contains(value_id))
+				conversion_options_[settings.value(key_id).toString()] =
+					settings.value(value_id);
 		}
 }
 

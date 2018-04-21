@@ -205,9 +205,9 @@ QWidget *Settings::get_view_settings_form(QWidget *parent) const
 	QFormLayout *trace_view_layout = new QFormLayout();
 	trace_view_group->setLayout(trace_view_layout);
 
-	cb = create_checkbox(GlobalSettings::Key_View_ColouredBG,
-		SLOT(on_view_colouredBG_changed(int)));
-	trace_view_layout->addRow(tr("Use coloured trace &background"), cb);
+	cb = create_checkbox(GlobalSettings::Key_View_ColoredBG,
+		SLOT(on_view_coloredBG_changed(int)));
+	trace_view_layout->addRow(tr("Use colored trace &background"), cb);
 
 	cb = create_checkbox(GlobalSettings::Key_View_ZoomToFitDuringAcq,
 		SLOT(on_view_zoomToFitDuringAcq_changed(int)));
@@ -571,10 +571,10 @@ void Settings::on_view_triggerIsZero_changed(int state)
 	settings.setValue(GlobalSettings::Key_View_TriggerIsZeroTime, state ? true : false);
 }
 
-void Settings::on_view_colouredBG_changed(int state)
+void Settings::on_view_coloredBG_changed(int state)
 {
 	GlobalSettings settings;
-	settings.setValue(GlobalSettings::Key_View_ColouredBG, state ? true : false);
+	settings.setValue(GlobalSettings::Key_View_ColoredBG, state ? true : false);
 }
 
 void Settings::on_view_stickyScrolling_changed(int state)
@@ -670,7 +670,7 @@ void Settings::on_log_popOut_clicked(bool checked)
 	(void)checked;
 
 	// Create the window as a sub-window so it closes when the main window closes
-	QMainWindow *window = new QMainWindow(0, Qt::SubWindow);
+	QMainWindow *window = new QMainWindow(nullptr, Qt::SubWindow);
 
 	window->setObjectName(QString::fromUtf8("Log Window"));
 	window->setWindowTitle(tr("%1 Log").arg(PV_TITLE));
