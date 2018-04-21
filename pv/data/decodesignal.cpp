@@ -65,7 +65,7 @@ DecodeSignal::DecodeSignal(pv::Session &session) :
 
 DecodeSignal::~DecodeSignal()
 {
-	reset_decode();
+	reset_decode(true);
 }
 
 const vector< shared_ptr<Decoder> >& DecodeSignal::decoder_stack() const
@@ -130,9 +130,9 @@ bool DecodeSignal::toggle_decoder_visibility(int index)
 	return state;
 }
 
-void DecodeSignal::reset_decode()
+void DecodeSignal::reset_decode(bool shutting_down)
 {
-	if (stack_config_changed_)
+	if (stack_config_changed_ || shutting_down)
 		stop_srd_session();
 	else
 		terminate_srd_session();
@@ -156,7 +156,11 @@ void DecodeSignal::reset_decode()
 	logic_mux_data_.reset();
 	logic_mux_data_invalid_ = true;
 
-	error_message_ = QString();
+	if (!error_message_.isEmpty()) {
+		error_message_ = QString();
+		// TODO Emulate noquote()
+		qDebug().nospace() << name() << ": Error cleared";
+	}
 
 	decode_reset();
 }
@@ -178,14 +182,14 @@ void DecodeSignal::begin_decode()
 	reset_decode();
 
 	if (stack_.size() == 0) {
-		error_message_ = tr("No decoders");
+		set_error_message(tr("No decoders"));
 		return;
 	}
 
 	assert(channels_.size() > 0);
 
 	if (get_assigned_signal_count() == 0) {
-		error_message_ = tr("There are no channels assigned to this decoder");
+		set_error_message(tr("There are no channels assigned to this decoder"));
 		return;
 	}
 
@@ -199,8 +203,8 @@ void DecodeSignal::begin_decode()
 	// Check that all decoders have the required channels
 	for (const shared_ptr<decode::Decoder> &dec : stack_)
 		if (!dec->have_required_channels()) {
-			error_message_ = tr("One or more required channels "
-				"have not been specified");
+			set_error_message(tr("One or more required channels "
+				"have not been specified"));
 			return;
 		}
 
@@ -238,7 +242,7 @@ void DecodeSignal::begin_decode()
 	connect_input_notifiers();
 
 	if (get_input_segment_count() == 0) {
-		error_message_ = tr("No input data");
+		set_error_message(tr("No input data"));
 		return;
 	}
 
@@ -582,6 +586,13 @@ void DecodeSignal::restore_settings(QSettings &settings)
 	begin_decode();
 }
 
+void DecodeSignal::set_error_message(QString msg)
+{
+	error_message_ = msg;
+	// TODO Emulate noquote()
+	qDebug().nospace() << name() << ": " << msg;
+}
+
 uint32_t DecodeSignal::get_input_segment_count() const
 {
 	uint64_t count = std::numeric_limits<uint64_t>::max();
@@ -776,7 +787,9 @@ void DecodeSignal::mux_logic_samples(uint32_t segment_id, const int64_t start, c
 	uint8_t* output = new uint8_t[(end - start) * output_segment->unit_size()];
 	unsigned int signal_count = signal_data.size();
 
-	for (int64_t sample_cnt = 0; sample_cnt < (end - start); sample_cnt++) {
+	for (int64_t sample_cnt = 0; !logic_mux_interrupt_ && (sample_cnt < (end - start));
+		sample_cnt++) {
+
 		int bitpos = 0;
 		uint8_t bytepos = 0;
 
@@ -846,7 +859,7 @@ void DecodeSignal::logic_mux_proc()
 
 				// ...and process the newly muxed logic data
 				decode_input_cond_.notify_one();
-			} while (processed_samples < samples_to_process);
+			} while (!logic_mux_interrupt_ && (processed_samples < samples_to_process));
 		}
 
 		if (samples_to_process == 0) {
@@ -895,7 +908,7 @@ void DecodeSignal::decode_data(
 
 		if (srd_session_send(srd_session_, i, chunk_end, chunk,
 				data_size, unit_size) != SRD_OK) {
-			error_message_ = tr("Decoder reported an error");
+			set_error_message(tr("Decoder reported an error"));
 			delete[] chunk;
 			break;
 		}
@@ -970,9 +983,8 @@ void DecodeSignal::decode_proc()
 				segments_.at(current_segment_id_).samplerate = input_segment->samplerate();
 				segments_.at(current_segment_id_).start_time = input_segment->start_time();
 
-				// Reset decoder state
-				stop_srd_session();
-				start_srd_session();
+				// Reset decoder state but keep the decoder stack intact
+				terminate_srd_session();
 			} else {
 				// All segments have been processed
 				decode_finished();
@@ -994,6 +1006,8 @@ void DecodeSignal::start_srd_session()
 {
 	uint64_t samplerate;
 
+	// If there were stack changes, the session has been destroyed by now, so if
+	// it hasn't been destroyed, we can just reset and re-use it
 	if (srd_session_) {
 		// When a decoder stack was created before, re-use it
 		// for the next stream of input data, after terminating
@@ -1022,7 +1036,7 @@ void DecodeSignal::start_srd_session()
 		srd_decoder_inst *const di = dec->create_decoder_inst(srd_session_);
 
 		if (!di) {
-			error_message_ = tr("Failed to create decoder instance");
+			set_error_message(tr("Failed to create decoder instance"));
 			srd_session_destroy(srd_session_);
 			srd_session_ = nullptr;
 			return;
@@ -1066,6 +1080,10 @@ void DecodeSignal::stop_srd_session()
 		// Destroy the session
 		srd_session_destroy(srd_session_);
 		srd_session_ = nullptr;
+
+		// Mark the decoder instances as non-existant since they were deleted
+		for (const shared_ptr<decode::Decoder> &dec : stack_)
+			dec->invalidate_decoder_inst();
 	}
 }
 
@@ -1127,6 +1145,9 @@ void DecodeSignal::annotation_callback(srd_proto_data *pdata, void *decode_signa
 	DecodeSignal *const ds = (DecodeSignal*)decode_signal;
 	assert(ds);
 
+	if (ds->decode_interrupt_)
+		return;
+
 	lock_guard<mutex> lock(ds->output_mutex_);
 
 	// Find the row
@@ -1178,6 +1199,12 @@ void DecodeSignal::on_data_cleared()
 
 void DecodeSignal::on_data_received()
 {
+	// If we detected a lack of input data when trying to start decoding,
+	// we have set an error message. Only try again if we now have data
+	// to work with
+	if ((!error_message_.isEmpty()) && (get_input_segment_count() == 0))
+		return;
+
 	if (!logic_mux_thread_.joinable())
 		begin_decode();
 	else

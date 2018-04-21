@@ -21,6 +21,8 @@
 set(pulseview_TEST_SOURCES
 	${PROJECT_SOURCE_DIR}/pv/devicemanager.cpp
 	${PROJECT_SOURCE_DIR}/pv/globalsettings.cpp
+	${PROJECT_SOURCE_DIR}/pv/logging.cpp
+	${PROJECT_SOURCE_DIR}/pv/mainwindow.cpp
 	${PROJECT_SOURCE_DIR}/pv/session.cpp
 	${PROJECT_SOURCE_DIR}/pv/storesession.cpp
 	${PROJECT_SOURCE_DIR}/pv/util.cpp
@@ -41,6 +43,7 @@ set(pulseview_TEST_SOURCES
 	${PROJECT_SOURCE_DIR}/pv/devices/sessionfile.cpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/connect.cpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/inputoutputoptions.cpp
+	${PROJECT_SOURCE_DIR}/pv/dialogs/settings.cpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/storeprogress.cpp
 	${PROJECT_SOURCE_DIR}/pv/prop/bool.cpp
 	${PROJECT_SOURCE_DIR}/pv/prop/double.cpp
@@ -77,8 +80,8 @@ set(pulseview_TEST_SOURCES
 	${PROJECT_SOURCE_DIR}/pv/views/trace/viewwidget.cpp
 	${PROJECT_SOURCE_DIR}/pv/views/viewbase.cpp
 	${PROJECT_SOURCE_DIR}/pv/views/trace/standardbar.cpp
-	${PROJECT_SOURCE_DIR}/pv/widgets/colourbutton.cpp
-	${PROJECT_SOURCE_DIR}/pv/widgets/colourpopup.cpp
+	${PROJECT_SOURCE_DIR}/pv/widgets/colorbutton.cpp
+	${PROJECT_SOURCE_DIR}/pv/widgets/colorpopup.cpp
 	${PROJECT_SOURCE_DIR}/pv/widgets/devicetoolbutton.cpp
 	${PROJECT_SOURCE_DIR}/pv/widgets/exportmenu.cpp
 	${PROJECT_SOURCE_DIR}/pv/widgets/importmenu.cpp
@@ -97,7 +100,10 @@ set(pulseview_TEST_SOURCES
 
 # This list includes only QObject derived class headers.
 set(pulseview_TEST_HEADERS
+	${PROJECT_SOURCE_DIR}/pv/devicemanager.hpp
 	${PROJECT_SOURCE_DIR}/pv/globalsettings.hpp
+	${PROJECT_SOURCE_DIR}/pv/logging.hpp
+	${PROJECT_SOURCE_DIR}/pv/mainwindow.hpp
 	${PROJECT_SOURCE_DIR}/pv/session.hpp
 	${PROJECT_SOURCE_DIR}/pv/storesession.hpp
 	${PROJECT_SOURCE_DIR}/pv/binding/device.hpp
@@ -109,6 +115,7 @@ set(pulseview_TEST_HEADERS
 	${PROJECT_SOURCE_DIR}/pv/devices/device.hpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/connect.hpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/inputoutputoptions.hpp
+	${PROJECT_SOURCE_DIR}/pv/dialogs/settings.hpp
 	${PROJECT_SOURCE_DIR}/pv/dialogs/storeprogress.hpp
 	${PROJECT_SOURCE_DIR}/pv/popups/channels.hpp
 	${PROJECT_SOURCE_DIR}/pv/popups/deviceoptions.hpp
@@ -140,8 +147,8 @@ set(pulseview_TEST_HEADERS
 	${PROJECT_SOURCE_DIR}/pv/views/trace/viewwidget.hpp
 	${PROJECT_SOURCE_DIR}/pv/views/viewbase.hpp
 	${PROJECT_SOURCE_DIR}/pv/views/trace/standardbar.hpp
-	${PROJECT_SOURCE_DIR}/pv/widgets/colourbutton.hpp
-	${PROJECT_SOURCE_DIR}/pv/widgets/colourpopup.hpp
+	${PROJECT_SOURCE_DIR}/pv/widgets/colorbutton.hpp
+	${PROJECT_SOURCE_DIR}/pv/widgets/colorpopup.hpp
 	${PROJECT_SOURCE_DIR}/pv/widgets/devicetoolbutton.hpp
 	${PROJECT_SOURCE_DIR}/pv/widgets/exportmenu.hpp
 	${PROJECT_SOURCE_DIR}/pv/widgets/importmenu.hpp

@@ -72,7 +72,7 @@ Signal::Signal(pv::Session &session,
 
 void Signal::set_name(QString name)
 {
-	Trace::set_name(name);
+	base_->set_name(name);
 
 	if (name != name_widget_->currentText())
 		name_widget_->setEditText(name);
@@ -127,7 +127,7 @@ void Signal::populate_popup_form(QWidget *parent, QFormLayout *form)
 
 	form->addRow(tr("Name"), name_widget_);
 
-	add_colour_option(parent, form);
+	add_color_option(parent, form);
 }
 
 QMenu* Signal::create_context_menu(QWidget *parent)

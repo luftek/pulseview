@@ -29,6 +29,11 @@ if(POLICY CMP0071)
 	cmake_policy(SET CMP0071 NEW)
 endif()
 
+# Only interpret if() arguments as variables or keywords when unquoted.
+if(POLICY CMP0054)
+	cmake_policy(SET CMP0054 NEW)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake")
 
 #===============================================================================
@@ -265,8 +270,8 @@ set(pulseview_SOURCES
 	pv/views/trace/viewwidget.cpp
 	pv/views/viewbase.cpp
 	pv/views/trace/standardbar.cpp
-	pv/widgets/colourbutton.cpp
-	pv/widgets/colourpopup.cpp
+	pv/widgets/colorbutton.cpp
+	pv/widgets/colorpopup.cpp
 	pv/widgets/devicetoolbutton.cpp
 	pv/widgets/exportmenu.cpp
 	pv/widgets/importmenu.cpp
@@ -324,8 +329,8 @@ set(pulseview_HEADERS
 	pv/views/trace/viewwidget.hpp
 	pv/views/viewbase.hpp
 	pv/views/trace/standardbar.hpp
-	pv/widgets/colourbutton.hpp
-	pv/widgets/colourpopup.hpp
+	pv/widgets/colorbutton.hpp
+	pv/widgets/colorpopup.hpp
 	pv/widgets/devicetoolbutton.hpp
 	pv/widgets/exportmenu.hpp
 	pv/widgets/importmenu.hpp
