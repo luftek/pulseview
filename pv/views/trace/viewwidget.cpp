@@ -50,9 +50,10 @@ void ViewWidget::clear_selection()
 		i->select(false);
 }
 
-void ViewWidget::item_hover(const shared_ptr<ViewItem> &item)
+void ViewWidget::item_hover(const shared_ptr<ViewItem> &item, QPoint pos)
 {
 	(void)item;
+	(void)pos;
 }
 
 void ViewWidget::item_clicked(const shared_ptr<ViewItem> &item)
@@ -169,7 +170,7 @@ void ViewWidget::mouse_left_press_event(QMouseEvent *event)
 		clear_selection();
 
 	// Set the signal selection state if the item has been clicked
-	if (mouse_down_item_) {
+	if (mouse_down_item_ && mouse_down_item_->is_selectable(event->pos())) {
 		if (ctrl_pressed)
 			mouse_down_item_->select(!mouse_down_item_->selected());
 		else
@@ -180,7 +181,7 @@ void ViewWidget::mouse_left_press_event(QMouseEvent *event)
 	bool item_dragged = false;
 	const auto items = this->items();
 	for (auto &i : items)
-		if (i->selected()) {
+		if (i->selected() && i->is_draggable(event->pos())) {
 			item_dragged = true;
 			i->drag();
 		}
@@ -281,7 +282,7 @@ void ViewWidget::mouseMoveEvent(QMouseEvent *event)
 	mouse_point_ = event->pos();
 
 	if (!event->buttons())
-		item_hover(get_mouse_over_item(event->pos()));
+		item_hover(get_mouse_over_item(event->pos()), event->pos());
 	else if (event->buttons() & Qt::LeftButton) {
 		if (!item_dragging_) {
 			if ((event->pos() - mouse_down_point_).manhattanLength() <

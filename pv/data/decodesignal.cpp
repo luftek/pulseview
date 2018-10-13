@@ -17,6 +17,7 @@
  * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <forward_list>
 #include <limits>
 
 #include <QDebug>
@@ -32,6 +33,7 @@
 #include <pv/globalsettings.hpp>
 #include <pv/session.hpp>
 
+using std::forward_list;
 using std::lock_guard;
 using std::make_pair;
 using std::make_shared;
@@ -149,6 +151,8 @@ void DecodeSignal::reset_decode(bool shutting_down)
 		logic_mux_thread_.join();
 	}
 
+	resume_decode();  // Make sure the decode thread isn't blocked by pausing
+
 	class_rows_.clear();
 	current_segment_id_ = 0;
 	segments_.clear();
@@ -209,6 +213,7 @@ void DecodeSignal::begin_decode()
 		}
 
 	// Map out all the annotation classes
+	int row_index = 0;
 	for (const shared_ptr<decode::Decoder> &dec : stack_) {
 		assert(dec);
 		const srd_decoder *const decc = dec->decoder();
@@ -219,7 +224,7 @@ void DecodeSignal::begin_decode()
 				(srd_decoder_annotation_row *)l->data;
 			assert(ann_row);
 
-			const Row row(decc, ann_row);
+			const Row row(row_index++, decc, ann_row);
 
 			for (const GSList *ll = ann_row->ann_classes;
 				ll; ll = ll->next)
@@ -255,6 +260,25 @@ void DecodeSignal::begin_decode()
 	decode_thread_ = std::thread(&DecodeSignal::decode_proc, this);
 }
 
+void DecodeSignal::pause_decode()
+{
+	decode_paused_ = true;
+}
+
+void DecodeSignal::resume_decode()
+{
+	// Manual unlocking is done before notifying, to avoid waking up the
+	// waiting thread only to block again (see notify_one for details)
+	decode_pause_mutex_.unlock();
+	decode_pause_cond_.notify_one();
+	decode_paused_ = false;
+}
+
+bool DecodeSignal::is_paused() const
+{
+	return decode_paused_;
+}
+
 QString DecodeSignal::error_message() const
 {
 	lock_guard<mutex> lock(output_mutex_);
@@ -279,15 +303,34 @@ void DecodeSignal::auto_assign_signals(const shared_ptr<Decoder> dec)
 		if (ch.assigned_signal)
 			continue;
 
+		QString ch_name = ch.name.toLower();
+		ch_name = ch_name.replace(QRegExp("[-_.]"), " ");
+
+		shared_ptr<data::SignalBase> match;
 		for (shared_ptr<data::SignalBase> s : session_.signalbases()) {
-			const QString ch_name = ch.name.toLower();
-			const QString s_name = s->name().toLower();
+			if (!s->enabled())
+				continue;
+
+			QString s_name = s->name().toLower();
+			s_name = s_name.replace(QRegExp("[-_.]"), " ");
 
 			if (s->logic_data() &&
 				((ch_name.contains(s_name)) || (s_name.contains(ch_name)))) {
-				ch.assigned_signal = s.get();
-				new_assignment = true;
+				if (!match)
+					match = s;
+				else {
+					// Only replace an existing match if it matches more characters
+					int old_unmatched = ch_name.length() - match->name().length();
+					int new_unmatched = ch_name.length() - s->name().length();
+					if (abs(new_unmatched) < abs(old_unmatched))
+						match = s;
+				}
 			}
+		}
+
+		if (match) {
+			ch.assigned_signal = match.get();
+			new_assignment = true;
 		}
 	}
 
@@ -381,7 +424,8 @@ int64_t DecodeSignal::get_working_sample_count(uint32_t segment_id) const
 	return (no_signals_assigned ? 0 : count);
 }
 
-int64_t DecodeSignal::get_decoded_sample_count(uint32_t segment_id) const
+int64_t DecodeSignal::get_decoded_sample_count(uint32_t segment_id,
+	bool include_processing) const
 {
 	lock_guard<mutex> decode_lock(output_mutex_);
 
@@ -389,7 +433,10 @@ int64_t DecodeSignal::get_decoded_sample_count(uint32_t segment_id) const
 
 	try {
 		const DecodeSegment *segment = &(segments_.at(segment_id));
-		result = segment->samples_decoded;
+		if (include_processing)
+			result = segment->samples_decoded_incl;
+		else
+			result = segment->samples_decoded_excl;
 	} catch (out_of_range&) {
 		// Do nothing
 	}
@@ -411,16 +458,17 @@ vector<Row> DecodeSignal::visible_rows() const
 		const srd_decoder *const decc = dec->decoder();
 		assert(dec->decoder());
 
+		int row_index = 0;
 		// Add a row for the decoder if it doesn't have a row list
 		if (!decc->annotation_rows)
-			rows.emplace_back(decc);
+			rows.emplace_back(row_index++, decc);
 
 		// Add the decoder rows
 		for (const GSList *l = decc->annotation_rows; l; l = l->next) {
 			const srd_decoder_annotation_row *const ann_row =
 				(srd_decoder_annotation_row *)l->data;
 			assert(ann_row);
-			rows.emplace_back(decc, ann_row);
+			rows.emplace_back(row_index++, decc, ann_row);
 		}
 	}
 
@@ -446,6 +494,33 @@ void DecodeSignal::get_annotation_subset(
 	} catch (out_of_range&) {
 		// Do nothing
 	}
+}
+
+void DecodeSignal::get_annotation_subset(
+	vector<pv::data::decode::Annotation> &dest,
+	uint32_t segment_id, uint64_t start_sample, uint64_t end_sample) const
+{
+	// Note: We put all vectors and lists on the heap, not the stack
+
+	const vector<Row> rows = visible_rows();
+
+	// Use forward_lists for faster merging
+	forward_list<Annotation> *all_ann_list = new forward_list<Annotation>();
+
+	for (const Row& row : rows) {
+		vector<Annotation> *ann_vector = new vector<Annotation>();
+		get_annotation_subset(*ann_vector, row, segment_id, start_sample, end_sample);
+
+		forward_list<Annotation> *ann_list =
+			new forward_list<Annotation>(ann_vector->begin(), ann_vector->end());
+		delete ann_vector;
+
+		all_ann_list->merge(*ann_list);
+		delete ann_list;
+	}
+
+	move(all_ann_list->begin(), all_ann_list->end(), back_inserter(dest));
+	delete all_ann_list;
 }
 
 void DecodeSignal::save_settings(QSettings &settings) const
@@ -885,6 +960,7 @@ void DecodeSignal::logic_mux_proc()
 				logic_mux_cond_.wait(logic_mux_lock);
 			}
 		}
+
 	} while (!logic_mux_interrupt_);
 }
 
@@ -896,33 +972,43 @@ void DecodeSignal::decode_data(
 	const int64_t chunk_sample_count = DecodeChunkLength / unit_size;
 
 	for (int64_t i = abs_start_samplenum;
-		!decode_interrupt_ && (i < (abs_start_samplenum + sample_count));
+		error_message_.isEmpty() && !decode_interrupt_ &&
+			(i < (abs_start_samplenum + sample_count));
 		i += chunk_sample_count) {
 
 		const int64_t chunk_end = min(i + chunk_sample_count,
 			abs_start_samplenum + sample_count);
+
+		{
+			lock_guard<mutex> lock(output_mutex_);
+			// Update the sample count showing the samples including currently processed ones
+			segments_.at(current_segment_id_).samples_decoded_incl = chunk_end;
+		}
 
 		int64_t data_size = (chunk_end - i) * unit_size;
 		uint8_t* chunk = new uint8_t[data_size];
 		input_segment->get_samples(i, chunk_end, chunk);
 
 		if (srd_session_send(srd_session_, i, chunk_end, chunk,
-				data_size, unit_size) != SRD_OK) {
+				data_size, unit_size) != SRD_OK)
 			set_error_message(tr("Decoder reported an error"));
-			delete[] chunk;
-			break;
-		}
 
 		delete[] chunk;
 
 		{
 			lock_guard<mutex> lock(output_mutex_);
-			segments_.at(current_segment_id_).samples_decoded = chunk_end;
+			// Now that all samples are processed, the exclusive sample count catches up
+			segments_.at(current_segment_id_).samples_decoded_excl = chunk_end;
 		}
 
 		// Notify the frontend that we processed some data and
 		// possibly have new annotations as well
 		new_annotations();
+
+		if (decode_paused_) {
+			unique_lock<mutex> pause_wait_lock(decode_pause_mutex_);
+			decode_pause_cond_.wait(pause_wait_lock);
+		}
 	}
 }
 
@@ -1004,8 +1090,6 @@ void DecodeSignal::decode_proc()
 
 void DecodeSignal::start_srd_session()
 {
-	uint64_t samplerate;
-
 	// If there were stack changes, the session has been destroyed by now, so if
 	// it hasn't been destroyed, we can just reset and re-use it
 	if (srd_session_) {
@@ -1016,13 +1100,20 @@ void DecodeSignal::start_srd_session()
 		// and) construction of another decoder stack.
 
 		// TODO Reduce redundancy, use a common code path for
-		// the meta/cb/start sequence?
+		// the meta/start sequence?
 		terminate_srd_session();
-		srd_session_metadata_set(srd_session_, SRD_CONF_SAMPLERATE,
-			g_variant_new_uint64(segments_.at(current_segment_id_).samplerate));
-		srd_pd_output_callback_add(srd_session_, SRD_OUTPUT_ANN,
-			DecodeSignal::annotation_callback, this);
+
+		// Metadata is cleared also, so re-set it
+		uint64_t samplerate = 0;
+		if (segments_.size() > 0)
+			samplerate = segments_.at(current_segment_id_).samplerate;
+		if (samplerate)
+			srd_session_metadata_set(srd_session_, SRD_CONF_SAMPLERATE,
+				g_variant_new_uint64(samplerate));
+		for (const shared_ptr<decode::Decoder> &dec : stack_)
+			dec->apply_all_options();
 		srd_session_start(srd_session_);
+
 		return;
 	}
 
@@ -1049,10 +1140,9 @@ void DecodeSignal::start_srd_session()
 	}
 
 	// Start the session
-	samplerate = segments_.at(current_segment_id_).samplerate;
-	if (samplerate)
+	if (segments_.size() > 0)
 		srd_session_metadata_set(srd_session_, SRD_CONF_SAMPLERATE,
-			g_variant_new_uint64(samplerate));
+			g_variant_new_uint64(segments_.at(current_segment_id_).samplerate));
 
 	srd_pd_output_callback_add(srd_session_, SRD_OUTPUT_ANN,
 		DecodeSignal::annotation_callback, this);
@@ -1070,8 +1160,19 @@ void DecodeSignal::terminate_srd_session()
 	// have completed their operation, and reduces response time for
 	// those stacks which still are processing data while the
 	// application no longer wants them to.
-	if (srd_session_)
+	if (srd_session_) {
 		srd_session_terminate_reset(srd_session_);
+
+		// Metadata is cleared also, so re-set it
+		uint64_t samplerate = 0;
+		if (segments_.size() > 0)
+			samplerate = segments_.at(current_segment_id_).samplerate;
+		if (samplerate)
+			srd_session_metadata_set(srd_session_, SRD_CONF_SAMPLERATE,
+				g_variant_new_uint64(samplerate));
+		for (const shared_ptr<decode::Decoder> &dec : stack_)
+			dec->apply_all_options();
+	}
 }
 
 void DecodeSignal::stop_srd_session()
@@ -1117,9 +1218,10 @@ void DecodeSignal::create_decode_segment()
 		const srd_decoder *const decc = dec->decoder();
 		assert(dec->decoder());
 
+		int row_index = 0;
 		// Add a row for the decoder if it doesn't have a row list
 		if (!decc->annotation_rows)
-			(segments_.back().annotation_rows)[Row(decc)] =
+			(segments_.back().annotation_rows)[Row(row_index++, decc)] =
 				decode::RowData();
 
 		// Add the decoder rows
@@ -1128,7 +1230,7 @@ void DecodeSignal::create_decode_segment()
 				(srd_decoder_annotation_row *)l->data;
 			assert(ann_row);
 
-			const Row row(decc, ann_row);
+			const Row row(row_index++, decc, ann_row);
 
 			// Add a new empty row data object
 			(segments_.back().annotation_rows)[row] =
@@ -1169,7 +1271,7 @@ void DecodeSignal::annotation_callback(srd_proto_data *pdata, void *decode_signa
 		row_iter = ds->segments_.at(ds->current_segment_id_).annotation_rows.find((*r).second);
 	else {
 		// Failing that, use the decoder as a key
-		row_iter = ds->segments_.at(ds->current_segment_id_).annotation_rows.find(Row(decc));
+		row_iter = ds->segments_.at(ds->current_segment_id_).annotation_rows.find(Row(0, decc));
 	}
 
 	if (row_iter == ds->segments_.at(ds->current_segment_id_).annotation_rows.end()) {
@@ -1180,7 +1282,7 @@ void DecodeSignal::annotation_callback(srd_proto_data *pdata, void *decode_signa
 	}
 
 	// Add the annotation
-	(*row_iter).second.emplace_annotation(pdata);
+	(*row_iter).second.emplace_annotation(pdata, &((*row_iter).first));
 }
 
 void DecodeSignal::on_capture_state_changed(int state)

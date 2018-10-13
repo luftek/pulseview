@@ -64,12 +64,10 @@ namespace views {
 
 namespace trace {
 
-class CursorHeader;
 class DecodeTrace;
 class Header;
 class Ruler;
 class Signal;
-class Trace;
 class Viewport;
 class TriggerMarker;
 
@@ -105,6 +103,12 @@ public:
 
 	~View();
 
+	/**
+	 * Resets the view to its default state after construction. It does however
+	 * not reset the signal bases or any other connections with the session.
+	 */
+	virtual void reset_view_state();
+
 	Session& session();
 	const Session& session() const;
 
@@ -124,6 +128,8 @@ public:
 
 	virtual void remove_decode_signal(shared_ptr<data::DecodeSignal> signal);
 #endif
+
+	shared_ptr<Signal> get_signal_under_mouse_cursor() const;
 
 	/**
 	 * Returns the view of the owner.
@@ -228,8 +234,6 @@ public:
 
 	void zoom_fit(bool gui_state);
 
-	void zoom_one_to_one();
-
 	/**
 	 * Sets the scale and offset.
 	 * @param scale The new view scale in seconds per pixel.
@@ -299,7 +303,18 @@ public:
 
 	const QPoint& hover_point() const;
 
+	/**
+	 * Determines the closest level change (i.e. edge) to a given point, which
+	 * is useful for e.g. the "snap to edge" functionality.
+	 *
+	 * @param p The current position of the mouse cursor
+	 * @return The sample number of the nearest level change or -1 if none
+	 */
+	int64_t get_nearest_level_change(const QPoint &p);
+
 	void restack_all_trace_tree_items();
+
+	int header_width() const;
 
 	void on_setting_changed(const QString &key, const QVariant &value);
 
@@ -336,6 +351,9 @@ Q_SIGNALS:
 	/// Emitted when the multi-segment display mode changed
 	/// @param mode is a value of Trace::SegmentDisplayMode
 	void segment_display_mode_changed(int mode, bool segment_selectable);
+
+	/// Emitted when the cursors are shown/hidden
+	void cursor_state_changed(bool show);
 
 public Q_SLOTS:
 	void trigger_event(int segment_id, util::Timestamp location);
@@ -386,6 +404,8 @@ private:
 	void determine_time_unit();
 
 	bool eventFilter(QObject *object, QEvent *event);
+
+	virtual void contextMenuEvent(QContextMenuEvent *event);
 
 	void resizeEvent(QResizeEvent *event);
 
@@ -508,6 +528,8 @@ private:
 	vector< shared_ptr<TriggerMarker> > trigger_markers_;
 
 	QPoint hover_point_;
+	shared_ptr<Signal> signal_under_mouse_cursor_;
+	uint16_t snap_distance_;
 
 	unsigned int sticky_events_;
 	QTimer lazy_event_handler_;

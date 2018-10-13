@@ -76,7 +76,7 @@ struct DecodeSegment
 	map<const decode::Row, decode::RowData> annotation_rows;
 	pv::util::Timestamp start_time;
 	double samplerate;
-	int64_t samples_decoded;
+	int64_t samples_decoded_incl, samples_decoded_excl;
 };
 
 class DecodeSignal : public SignalBase
@@ -101,6 +101,9 @@ public:
 
 	void reset_decode(bool shutting_down = false);
 	void begin_decode();
+	void pause_decode();
+	void resume_decode();
+	bool is_paused() const;
 	QString error_message() const;
 
 	const vector<data::DecodeChannel> get_channels() const;
@@ -120,17 +123,37 @@ public:
 	 */
 	int64_t get_working_sample_count(uint32_t segment_id) const;
 
-	int64_t get_decoded_sample_count(uint32_t segment_id) const;
+	/**
+	 * Returns the number of processed samples. Newly generated annotations will
+	 * have sample numbers greater than this.
+	 *
+	 * If include_processing is true, this number will include the ones being
+	 * currently processed (in case the decoder stack is running). In this case,
+	 * newly generated annotations will have sample numbers smaller than this.
+	 */
+	int64_t get_decoded_sample_count(uint32_t segment_id,
+		bool include_processing) const;
 
 	vector<decode::Row> visible_rows() const;
 
 	/**
-	 * Extracts sorted annotations between two period into a vector.
+	 * Extracts annotations from a single row into a vector.
+	 * Note: The annotations may be unsorted and only annotations that fully
+	 * fit into the sample range are considered.
 	 */
 	void get_annotation_subset(
 		vector<pv::data::decode::Annotation> &dest,
 		const decode::Row &row, uint32_t segment_id, uint64_t start_sample,
 		uint64_t end_sample) const;
+
+	/**
+	 * Extracts annotations from all rows into a vector.
+	 * Note: The annotations may be unsorted and only annotations that fully
+	 * fit into the sample range are considered.
+	 */
+	void get_annotation_subset(
+		vector<pv::data::decode::Annotation> &dest,
+		uint32_t segment_id, uint64_t start_sample, uint64_t end_sample) const;
 
 	virtual void save_settings(QSettings &settings) const;
 
@@ -195,11 +218,14 @@ private:
 	vector<DecodeSegment> segments_;
 	uint32_t current_segment_id_;
 
-	mutable mutex input_mutex_, output_mutex_, logic_mux_mutex_;
-	mutable condition_variable decode_input_cond_, logic_mux_cond_;
+	mutable mutex input_mutex_, output_mutex_, decode_pause_mutex_, logic_mux_mutex_;
+	mutable condition_variable decode_input_cond_, decode_pause_cond_,
+		logic_mux_cond_;
 
 	std::thread decode_thread_, logic_mux_thread_;
 	atomic<bool> decode_interrupt_, logic_mux_interrupt_;
+
+	bool decode_paused_;
 
 	QString error_message_;
 };

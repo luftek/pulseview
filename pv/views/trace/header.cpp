@@ -125,7 +125,7 @@ void Header::contextMenuEvent(QContextMenuEvent *event)
 	if (!r)
 		return;
 
-	QMenu *menu = r->create_context_menu(this);
+	QMenu *menu = r->create_header_context_menu(this);
 	if (!menu)
 		menu = new QMenu(this);
 
@@ -142,7 +142,7 @@ void Header::contextMenuEvent(QContextMenuEvent *event)
 		menu->addAction(group);
 	}
 
-	menu->exec(event->globalPos());
+	menu->popup(event->globalPos());
 }
 
 void Header::keyPressEvent(QKeyEvent *event)

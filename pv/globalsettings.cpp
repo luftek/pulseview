@@ -20,11 +20,13 @@
 #include "globalsettings.hpp"
 
 #include <QApplication>
+#include <QColor>
 #include <QDebug>
 #include <QFontMetrics>
 #include <QString>
 
 using std::map;
+using std::string;
 using std::vector;
 
 namespace pv {
@@ -35,11 +37,16 @@ const QString GlobalSettings::Key_View_TriggerIsZeroTime = "View_TriggerIsZeroTi
 const QString GlobalSettings::Key_View_ColoredBG = "View_ColoredBG";
 const QString GlobalSettings::Key_View_StickyScrolling = "View_StickyScrolling";
 const QString GlobalSettings::Key_View_ShowSamplingPoints = "View_ShowSamplingPoints";
+const QString GlobalSettings::Key_View_FillSignalHighAreas = "View_FillSignalHighAreas";
+const QString GlobalSettings::Key_View_FillSignalHighAreaColor = "View_FillSignalHighAreaColor";
 const QString GlobalSettings::Key_View_ShowAnalogMinorGrid = "View_ShowAnalogMinorGrid";
 const QString GlobalSettings::Key_View_ConversionThresholdDispMode = "View_ConversionThresholdDispMode";
 const QString GlobalSettings::Key_View_DefaultDivHeight = "View_DefaultDivHeight";
 const QString GlobalSettings::Key_View_DefaultLogicHeight = "View_DefaultLogicHeight";
+const QString GlobalSettings::Key_View_ShowHoverMarker = "View_ShowHoverMarker";
+const QString GlobalSettings::Key_View_SnapDistance = "View_SnapDistance";
 const QString GlobalSettings::Key_Dec_InitialStateConfigurable = "Dec_InitialStateConfigurable";
+const QString GlobalSettings::Key_Dec_ExportFormat = "Dec_ExportFormat";
 const QString GlobalSettings::Key_Log_BufferSize = "Log_BufferSize";
 const QString GlobalSettings::Key_Log_NotifyOfStacktrace = "Log_NotifyOfStacktrace";
 
@@ -67,6 +74,13 @@ void GlobalSettings::set_defaults_where_needed()
 	if (!contains(Key_View_ShowSamplingPoints))
 		setValue(Key_View_ShowSamplingPoints, true);
 
+	// Enable filling logic signal high areas by default
+	if (!contains(Key_View_FillSignalHighAreas))
+		setValue(Key_View_FillSignalHighAreas, true);
+	if (!contains(Key_View_FillSignalHighAreaColor))
+		setValue(Key_View_FillSignalHighAreaColor,
+			QColor(0, 0, 0, 5 * 256 / 100).rgba());
+
 	if (!contains(Key_View_DefaultDivHeight))
 		setValue(Key_View_DefaultDivHeight,
 		3 * QFontMetrics(QApplication::font()).height());
@@ -74,6 +88,15 @@ void GlobalSettings::set_defaults_where_needed()
 	if (!contains(Key_View_DefaultLogicHeight))
 		setValue(Key_View_DefaultLogicHeight,
 		2 * QFontMetrics(QApplication::font()).height());
+
+	if (!contains(Key_View_ShowHoverMarker))
+		setValue(Key_View_ShowHoverMarker, true);
+
+	if (!contains(Key_View_SnapDistance))
+		setValue(Key_View_SnapDistance, 15);
+
+	if (!contains(Key_Dec_ExportFormat))
+		setValue(Key_Dec_ExportFormat, "%s %d: %c: %1");
 
 	// Default to 500 lines of backlog
 	if (!contains(Key_Log_BufferSize))
@@ -169,5 +192,33 @@ GVariant* GlobalSettings::restore_gvariant(QSettings &settings)
 	return value;
 }
 
+void GlobalSettings::store_variantbase(QSettings &settings, Glib::VariantBase v)
+{
+	const QByteArray var_data = QByteArray((const char*)v.get_data(), v.get_size());
+
+	settings.setValue("value", var_data);
+	settings.setValue("type", QString::fromStdString(v.get_type_string()));
+}
+
+Glib::VariantBase GlobalSettings::restore_variantbase(QSettings &settings)
+{
+	QString raw_type = settings.value("type").toString();
+	GVariantType *var_type = g_variant_type_new(raw_type.toUtf8());
+
+	QByteArray data = settings.value("value").toByteArray();
+
+	gpointer var_data = g_memdup((gconstpointer)data.constData(),
+		(guint)data.size());
+
+	GVariant *value = g_variant_new_from_data(var_type, var_data,
+		data.size(), false, g_free, var_data);
+
+	Glib::VariantBase ret_val = Glib::VariantBase(value, true);
+
+	g_variant_type_free(var_type);
+	g_variant_unref(value);
+
+	return ret_val;
+}
 
 } // namespace pv

@@ -90,17 +90,6 @@ public:
 	pair<int, int> v_extents() const;
 
 	/**
-	 * Returns the offset to show the drag handle.
-	 */
-	int scale_handle_offset() const;
-
-	/**
-	 * Handles the scale handle being dragged to an offset.
-	 * @param offset the offset the scale handle was dragged to.
-	 */
-	void scale_handle_dragged(int offset);
-
-	/**
 	 * Paints the mid-layer of the signal with a QPainter
 	 * @param p the QPainter to paint into.
 	 * @param pp the painting parameters object to paint with..
@@ -113,6 +102,15 @@ public:
 	 * @param pp the painting parameters object to paint with.
 	 */
 	virtual void paint_fore(QPainter &p, ViewItemPaintParams &pp);
+
+	/**
+	 * Determines the closest level change (i.e. edge) to a given sample, which
+	 * is useful for e.g. the "snap to edge" functionality.
+	 *
+	 * @param sample_pos Sample to use
+	 * @return The changes left and right of the given position
+	 */
+	virtual vector<data::LogicSegment::EdgePair> get_nearest_level_changes(uint64_t sample_pos);
 
 private:
 	void paint_caps(QPainter &p, QLineF *const lines,
@@ -147,6 +145,7 @@ private:
 	QSpinBox *signal_height_sb_;
 
 	const sigrok::TriggerMatchType *trigger_match_;
+	const vector<int32_t> trigger_types_;
 	QToolBar *trigger_bar_;
 	QAction *trigger_none_;
 	QAction *trigger_rising_;

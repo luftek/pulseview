@@ -27,6 +27,8 @@
 
 #include <cstdint>
 
+#include <pv/data/logicsegment.hpp>
+
 #include "trace.hpp"
 #include "viewitemowner.hpp"
 
@@ -69,6 +71,15 @@ public:
 	virtual shared_ptr<pv::data::SignalData> data() const = 0;
 
 	/**
+	 * Determines the closest level change (i.e. edge) to a given sample, which
+	 * is useful for e.g. the "snap to edge" functionality.
+	 *
+	 * @param sample_pos Sample to use
+	 * @return The changes left and right of the given position
+	 */
+	virtual vector<data::LogicSegment::EdgePair> get_nearest_level_changes(uint64_t sample_pos) = 0;
+
+	/**
 	 * Returns true if the trace is visible and enabled.
 	 */
 	bool enabled() const;
@@ -83,7 +94,7 @@ public:
 
 	virtual void populate_popup_form(QWidget *parent, QFormLayout *form);
 
-	QMenu* create_context_menu(QWidget *parent);
+	QMenu* create_header_context_menu(QWidget *parent);
 
 	void delete_pressed();
 

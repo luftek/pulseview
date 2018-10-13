@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <fstream>
 #include <getopt.h>
+#include <vector>
 
 #include <libsigrokcxx/libsigrokcxx.hpp>
 
@@ -34,6 +35,8 @@
 #include <QMessageBox>
 #include <QSettings>
 #include <QTextStream>
+
+#include "config.h"
 
 #ifdef ENABLE_SIGNALS
 #include "signalhandler.hpp"
@@ -57,8 +60,6 @@
 #include "android/assetreader.hpp"
 #include "android/loghandler.hpp"
 #endif
-
-#include "config.h"
 
 #ifdef _WIN32
 #include <QtPlugin>
@@ -150,11 +151,10 @@ void usage()
 		"  -V, --version                   Show release version\n"
 		"  -l, --loglevel                  Set libsigrok/libsigrokdecode loglevel\n"
 		"  -d, --driver                    Specify the device driver to use\n"
-		"  -D, --no-scan                   Don't auto-scan for devices, use -d spec only\n"
+		"  -D, --dont-scan                 Don't auto-scan for devices, use -d spec only\n"
 		"  -i, --input-file                Load input from file\n"
 		"  -I, --input-format              Input format\n"
 		"  -c, --clean                     Don't restore previous sessions on startup\n"
-		"  -s, --log-to-stdout             Don't use logging, output to stdout instead\n"
 		"\n", PV_BIN_NAME);
 }
 
@@ -162,10 +162,11 @@ int main(int argc, char *argv[])
 {
 	int ret = 0;
 	shared_ptr<sigrok::Context> context;
-	string open_file, open_file_format, driver;
+	string open_file_format, driver;
+	vector<string> open_files;
 	bool restore_sessions = true;
 	bool do_scan = true;
-	bool do_logging = true;
+	bool show_version = false;
 
 	Application a(argc, argv);
 
@@ -182,7 +183,7 @@ int main(int argc, char *argv[])
 			{"version", no_argument, nullptr, 'V'},
 			{"loglevel", required_argument, nullptr, 'l'},
 			{"driver", required_argument, nullptr, 'd'},
-			{"no-scan", no_argument, nullptr, 'D'},
+			{"dont-scan", no_argument, nullptr, 'D'},
 			{"input-file", required_argument, nullptr, 'i'},
 			{"input-format", required_argument, nullptr, 'I'},
 			{"clean", no_argument, nullptr, 'c'},
@@ -191,7 +192,7 @@ int main(int argc, char *argv[])
 		};
 
 		const int c = getopt_long(argc, argv,
-			"h?VDcsl:d:i:I:", long_options, nullptr);
+			"h?VDcl:d:i:I:", long_options, nullptr);
 		if (c == -1)
 			break;
 
@@ -202,9 +203,8 @@ int main(int argc, char *argv[])
 			return 0;
 
 		case 'V':
-			// Print version info
-			fprintf(stdout, "%s %s\n", PV_TITLE, PV_VERSION_STRING);
-			return 0;
+			show_version = true;
+			break;
 
 		case 'l':
 		{
@@ -236,7 +236,7 @@ int main(int argc, char *argv[])
 			break;
 
 		case 'i':
-			open_file = optarg;
+			open_files.emplace_back(optarg);
 			break;
 
 		case 'I':
@@ -246,27 +246,19 @@ int main(int argc, char *argv[])
 		case 'c':
 			restore_sessions = false;
 			break;
-
-		case 's':
-			do_logging = false;
-			break;
 		}
 	}
+	argc -= optind;
+	argv += optind;
 
-	if (argc - optind > 1) {
-		fprintf(stderr, "Only one file can be opened.\n");
-		return 1;
-	}
-
-	if (argc - optind == 1)
-		open_file = argv[argc - 1];
+	for (int i = 0; i < argc; i++)
+		open_files.emplace_back(argv[i]);
 
 	// Prepare the global settings since logging needs them early on
 	pv::GlobalSettings settings;
 	settings.set_defaults_where_needed();
 
-	if (do_logging)
-		pv::logging.init();
+	pv::logging.init();
 
 	// Initialise libsigrok
 	context = sigrok::Context::create();
@@ -308,31 +300,37 @@ int main(int argc, char *argv[])
 		// Create the device manager, initialise the drivers
 		pv::DeviceManager device_manager(context, driver, do_scan);
 
-		// Initialise the main window
-		pv::MainWindow w(device_manager);
-		w.show();
+		a.collect_version_info(context);
+		if (show_version) {
+			a.print_version_info();
+		} else {
+			// Initialise the main window
+			pv::MainWindow w(device_manager);
+			w.show();
 
-		if (restore_sessions)
-			w.restore_sessions();
+			if (restore_sessions)
+				w.restore_sessions();
 
-		if (!open_file.empty())
-			w.add_session_with_file(open_file, open_file_format);
-		else
-			w.add_default_session();
+			if (open_files.empty())
+				w.add_default_session();
+			else
+				for (string open_file : open_files)
+					w.add_session_with_file(open_file, open_file_format);
 
 #ifdef ENABLE_SIGNALS
-		if (SignalHandler::prepare_signals()) {
-			SignalHandler *const handler = new SignalHandler(&w);
-			QObject::connect(handler, SIGNAL(int_received()),
-				&w, SLOT(close()));
-			QObject::connect(handler, SIGNAL(term_received()),
-				&w, SLOT(close()));
-		} else
-			qWarning() << "Could not prepare signal handler.";
+			if (SignalHandler::prepare_signals()) {
+				SignalHandler *const handler = new SignalHandler(&w);
+				QObject::connect(handler, SIGNAL(int_received()),
+					&w, SLOT(close()));
+				QObject::connect(handler, SIGNAL(term_received()),
+					&w, SLOT(close()));
+			} else
+				qWarning() << "Could not prepare signal handler.";
 #endif
 
-		// Run the application
-		ret = a.exec();
+			// Run the application
+			ret = a.exec();
+		}
 
 #ifndef ENABLE_STACKTRACE
 		} catch (exception& e) {

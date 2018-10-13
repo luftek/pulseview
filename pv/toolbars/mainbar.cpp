@@ -302,6 +302,21 @@ void MainBar::update_sample_rate_selector()
 
 	const shared_ptr<sigrok::Device> sr_dev = device->device();
 
+	sample_rate_.allow_user_entered_values(false);
+	if (sr_dev->config_check(ConfigKey::EXTERNAL_CLOCK, Capability::GET)) {
+		try {
+			auto gvar = sr_dev->config_get(ConfigKey::EXTERNAL_CLOCK);
+			if (gvar.gobj()) {
+				bool value = Glib::VariantBase::cast_dynamic<Glib::Variant<bool>>(
+					gvar).get();
+				sample_rate_.allow_user_entered_values(value);
+			}
+		} catch (Error& error) {
+			// Do nothing
+		}
+	}
+
+
 	if (sr_dev->config_check(ConfigKey::SAMPLERATE, Capability::LIST)) {
 		try {
 			gvar_dict = sr_dev->config_list(ConfigKey::SAMPLERATE);
@@ -494,8 +509,6 @@ void MainBar::commit_sample_rate()
 	const shared_ptr<sigrok::Device> sr_dev = device->device();
 
 	sample_rate = sample_rate_.value();
-	if (sample_rate == 0)
-		return;
 
 	try {
 		sr_dev->config_set(ConfigKey::SAMPLERATE,
@@ -592,9 +605,9 @@ void MainBar::export_file(shared_ptr<OutputFormat> format, bool selection_only)
 		const pv::util::Timestamp& end_time = trace_view->cursors()->second()->time();
 
 		const uint64_t start_sample = (uint64_t)max(
-			(double)0, start_time.convert_to<double>() * samplerate);
+			0.0, start_time.convert_to<double>() * samplerate);
 		const uint64_t end_sample = (uint64_t)max(
-			(double)0, end_time.convert_to<double>() * samplerate);
+			0.0, end_time.convert_to<double>() * samplerate);
 
 		if ((start_sample == 0) && (end_sample == 0)) {
 			// Both cursors are negative and were clamped to 0
@@ -729,6 +742,10 @@ void MainBar::on_sample_rate_changed()
 
 void MainBar::on_config_changed()
 {
+	// We want to also call update_sample_rate_selector() here in case
+	// the user changed the SR_CONF_EXTERNAL_CLOCK option. However,
+	// commit_sample_rate() does this already, so we don't call it here
+
 	commit_sample_count();
 	commit_sample_rate();
 }

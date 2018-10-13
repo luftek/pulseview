@@ -40,11 +40,11 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/CMake")
 #= User Options
 #-------------------------------------------------------------------------------
 
-option(DISABLE_WERROR "Build without -Werror" FALSE)
+option(DISABLE_WERROR "Build without -Werror" TRUE)
 option(ENABLE_SIGNALS "Build with UNIX signals" TRUE)
 option(ENABLE_STACKTRACE "Enable stack trace when crashing" FALSE)
 option(ENABLE_DECODE "Build with libsigrokdecode" TRUE)
-option(ENABLE_TESTS "Enable unit tests" TRUE)
+option(ENABLE_TESTS "Enable unit tests" FALSE)
 option(STATIC_PKGDEPS_LIBS "Statically link to (pkg-config) libraries" FALSE)
 
 if(WIN32)
@@ -69,7 +69,8 @@ endif()
 list(APPEND PKGDEPS glib-2.0>=2.28.0)
 list(APPEND PKGDEPS glibmm-2.4>=2.28.0)
 
-list(APPEND PKGDEPS libsigrokcxx>=0.6.0)
+set(LIBSR_CXX_BINDING "libsigrokcxx>=0.6.0")
+list(APPEND PKGDEPS "${LIBSR_CXX_BINDING}")
 
 if(ENABLE_DECODE)
 	list(APPEND PKGDEPS libsigrokdecode>=0.6.0)
@@ -80,6 +81,10 @@ if(ANDROID)
 endif()
 
 find_package(PkgConfig)
+pkg_check_modules(LIBSRCXX QUIET ${LIBSR_CXX_BINDING})
+if(NOT LIBSRCXX_FOUND OR NOT LIBSRCXX_VERSION)
+	message(FATAL_ERROR "libsigrok C++ bindings missing, check libsigrok's 'configure' output (missing dependencies?)")
+endif()
 pkg_check_modules(PKGDEPS REQUIRED ${PKGDEPS})
 
 set(CMAKE_AUTOMOC TRUE)
@@ -195,7 +200,7 @@ if(PV_VERSION_STRING MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(-[-0-9a-z]*)?$")
 	set(PV_VERSION_SUFFIX ${CMAKE_MATCH_4})
 endif()
 
-message("-- ${PV_TITLE} version: ${PV_VERSION_STRING}")
+message(STATUS "${PV_TITLE} version: ${PV_VERSION_STRING}")
 
 configure_file (
 	${PROJECT_SOURCE_DIR}/config.h.in

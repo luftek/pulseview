@@ -23,6 +23,7 @@
 #include <list>
 
 #include <QPen>
+#include <QPoint>
 
 #include "viewitempaintparams.hpp"
 
@@ -59,6 +60,11 @@ public:
 	virtual bool enabled() const = 0;
 
 	/**
+	 * Returns true if the item may be selected.
+	 */
+	virtual bool is_selectable(QPoint pos) const;
+
+	/**
 	 * Returns true if the item has been selected by the user.
 	 */
 	bool selected() const;
@@ -71,7 +77,7 @@ public:
 	/**
 	 * Returns true if the item may be dragged/moved.
 	 */
-	virtual bool is_draggable() const;
+	virtual bool is_draggable(QPoint pos) const;
 
 	/**
 	 * Returns true if the item is being dragged.
@@ -155,7 +161,9 @@ public:
 	static QColor select_text_color(QColor background);
 
 public:
-	virtual QMenu* create_context_menu(QWidget *parent);
+	virtual QMenu* create_header_context_menu(QWidget *parent);
+
+	virtual QMenu* create_view_context_menu(QWidget *parent, QPoint &click_pos);
 
 	virtual pv::widgets::Popup* create_popup(QWidget *parent);
 

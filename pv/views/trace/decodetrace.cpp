@@ -21,21 +21,24 @@ extern "C" {
 #include <libsigrokdecode/libsigrokdecode.h>
 }
 
+#include <limits>
 #include <mutex>
+#include <tuple>
 
 #include <extdef.h>
-
-#include <tuple>
 
 #include <boost/functional/hash.hpp>
 
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QTextStream>
 #include <QToolTip>
 
 #include "decodetrace.hpp"
@@ -53,10 +56,11 @@ extern "C" {
 #include <pv/widgets/decodergroupbox.hpp>
 #include <pv/widgets/decodermenu.hpp>
 
-using std::all_of;
+using std::abs;
 using std::make_pair;
 using std::max;
 using std::min;
+using std::numeric_limits;
 using std::out_of_range;
 using std::pair;
 using std::shared_ptr;
@@ -164,21 +168,18 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 	row_height_ = (text_height * 6) / 4;
 	const int annotation_height = (text_height * 5) / 4;
 
-	const QString err = decode_signal_->error_message();
-	if (!err.isEmpty()) {
-		draw_unresolved_period(
-			p, annotation_height, pp.left(), pp.right());
-		draw_error(p, err, pp);
-		return;
-	}
-
 	// Set default pen to allow for text width calculation
 	p.setPen(Qt::black);
 
 	// Iterate through the rows
 	int y = get_visual_y();
-	pair<uint64_t, uint64_t> sample_range = get_sample_range(
-		pp.left(), pp.right());
+	pair<uint64_t, uint64_t> sample_range = get_view_sample_range(pp.left(), pp.right());
+
+	// Just because the view says we see a certain sample range it
+	// doesn't mean we have this many decoded samples, too, so crop
+	// the range to what has been decoded already
+	sample_range.second = min((int64_t)sample_range.second,
+		decode_signal_->get_decoded_sample_count(current_segment_, false));
 
 	const vector<Row> rows = decode_signal_->visible_rows();
 
@@ -200,15 +201,12 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 			current_segment_, sample_range.first, sample_range.second);
 		if (!annotations.empty()) {
 			draw_annotations(annotations, p, annotation_height, pp, y,
-				get_row_color(visible_rows_.size()), row_title_width);
-
+				get_row_color(row.index()), row_title_width);
 			y += row_height_;
-
 			visible_rows_.push_back(row);
 		}
 	}
 
-	// Draw the hatching
 	draw_unresolved_period(p, annotation_height, pp.left(), pp.right());
 
 	if ((int)visible_rows_.size() > max_visible_rows_) {
@@ -218,6 +216,10 @@ void DecodeTrace::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 		owner_->extents_changed(false, true);
 		owner_->row_item_appearance_changed(false, true);
 	}
+
+	const QString err = decode_signal_->error_message();
+	if (!err.isEmpty())
+		draw_error(p, err, pp);
 }
 
 void DecodeTrace::paint_fore(QPainter &p, ViewItemPaintParams &pp)
@@ -256,6 +258,9 @@ void DecodeTrace::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 		p.setPen(QApplication::palette().color(QPalette::WindowText));
 		p.drawText(r, f, h);
 	}
+
+	if (show_hover_marker_)
+		paint_hover_marker(p);
 }
 
 void DecodeTrace::populate_popup_form(QWidget *parent, QFormLayout *form)
@@ -307,9 +312,9 @@ void DecodeTrace::populate_popup_form(QWidget *parent, QFormLayout *form)
 	form->addRow(stack_button_box);
 }
 
-QMenu* DecodeTrace::create_context_menu(QWidget *parent)
+QMenu* DecodeTrace::create_header_context_menu(QWidget *parent)
 {
-	QMenu *const menu = Trace::create_context_menu(parent);
+	QMenu *const menu = Trace::create_header_context_menu(parent);
 
 	menu->addSeparator();
 
@@ -321,14 +326,111 @@ QMenu* DecodeTrace::create_context_menu(QWidget *parent)
 	return menu;
 }
 
+QMenu* DecodeTrace::create_view_context_menu(QWidget *parent, QPoint &click_pos)
+{
+	try {
+		selected_row_ = &visible_rows_[get_row_at_point(click_pos)];
+	} catch (out_of_range&) {
+		selected_row_ = nullptr;
+	}
+
+	// Default sample range is "from here"
+	const pair<uint64_t, uint64_t> sample_range =
+		get_view_sample_range(click_pos.x(), click_pos.x() + 1);
+	selected_sample_range_ = make_pair(sample_range.first, numeric_limits<uint64_t>::max());
+
+	QMenu *const menu = new QMenu(parent);
+
+	if (decode_signal_->is_paused()) {
+		QAction *const resume =
+			new QAction(tr("Resume decoding"), this);
+		resume->setIcon(QIcon::fromTheme("media-playback-start",
+			QIcon(":/icons/media-playback-start.png")));
+		connect(resume, SIGNAL(triggered()), this, SLOT(on_pause_decode()));
+		menu->addAction(resume);
+	} else {
+		QAction *const pause =
+			new QAction(tr("Pause decoding"), this);
+		pause->setIcon(QIcon::fromTheme("media-playback-pause",
+			QIcon(":/icons/media-playback-pause.png")));
+		connect(pause, SIGNAL(triggered()), this, SLOT(on_pause_decode()));
+		menu->addAction(pause);
+	}
+
+	menu->addSeparator();
+
+	QAction *const export_all_rows =
+		new QAction(tr("Export all annotations"), this);
+	export_all_rows->setIcon(QIcon::fromTheme("document-save-as",
+		QIcon(":/icons/document-save-as.png")));
+	connect(export_all_rows, SIGNAL(triggered()), this, SLOT(on_export_all_rows()));
+	menu->addAction(export_all_rows);
+
+	QAction *const export_row =
+		new QAction(tr("Export all annotations for this row"), this);
+	export_row->setIcon(QIcon::fromTheme("document-save-as",
+		QIcon(":/icons/document-save-as.png")));
+	connect(export_row, SIGNAL(triggered()), this, SLOT(on_export_row()));
+	menu->addAction(export_row);
+
+	menu->addSeparator();
+
+	QAction *const export_all_rows_from_here =
+		new QAction(tr("Export all annotations, starting here"), this);
+	export_all_rows_from_here->setIcon(QIcon::fromTheme("document-save-as",
+		QIcon(":/icons/document-save-as.png")));
+	connect(export_all_rows_from_here, SIGNAL(triggered()), this, SLOT(on_export_all_rows_from_here()));
+	menu->addAction(export_all_rows_from_here);
+
+	QAction *const export_row_from_here =
+		new QAction(tr("Export annotations for this row, starting here"), this);
+	export_row_from_here->setIcon(QIcon::fromTheme("document-save-as",
+		QIcon(":/icons/document-save-as.png")));
+	connect(export_row_from_here, SIGNAL(triggered()), this, SLOT(on_export_row_from_here()));
+	menu->addAction(export_row_from_here);
+
+	menu->addSeparator();
+
+	QAction *const export_all_rows_with_cursor =
+		new QAction(tr("Export all annotations within cursor range"), this);
+	export_all_rows_with_cursor->setIcon(QIcon::fromTheme("document-save-as",
+		QIcon(":/icons/document-save-as.png")));
+	connect(export_all_rows_with_cursor, SIGNAL(triggered()), this, SLOT(on_export_all_rows_with_cursor()));
+	menu->addAction(export_all_rows_with_cursor);
+
+	QAction *const export_row_with_cursor =
+		new QAction(tr("Export annotations for this row within cursor range"), this);
+	export_row_with_cursor->setIcon(QIcon::fromTheme("document-save-as",
+		QIcon(":/icons/document-save-as.png")));
+	connect(export_row_with_cursor, SIGNAL(triggered()), this, SLOT(on_export_row_with_cursor()));
+	menu->addAction(export_row_with_cursor);
+
+	const View *view = owner_->view();
+	assert(view);
+
+	if (!view->cursors()->enabled()) {
+		export_all_rows_with_cursor->setEnabled(false);
+		export_row_with_cursor->setEnabled(false);
+	}
+
+	return menu;
+}
+
 void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotations,
 		QPainter &p, int h, const ViewItemPaintParams &pp, int y,
 		QColor row_color, int row_title_width)
 {
 	using namespace pv::data::decode;
 
-	vector<Annotation> a_block;
-	int p_end = INT_MIN;
+	Annotation::Class block_class = 0;
+	bool block_class_uniform = true;
+	qreal block_start = 0;
+	int block_ann_count = 0;
+
+	const Annotation *prev_ann;
+	qreal prev_end = INT_MIN;
+
+	qreal a_end;
 
 	double samples_per_pixel, pixels_offset;
 	tie(pixels_offset, samples_per_pixel) =
@@ -343,18 +445,21 @@ void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotati
 	// Gather all annotations that form a visual "block" and draw them as such
 	for (const Annotation &a : annotations) {
 
-		const int a_start = a.start_sample() / samples_per_pixel - pixels_offset;
-		const int a_end = a.end_sample() / samples_per_pixel - pixels_offset;
-		const int a_width = a_end - a_start;
+		const qreal abs_a_start = a.start_sample() / samples_per_pixel;
+		const qreal abs_a_end   = a.end_sample() / samples_per_pixel;
 
-		const int delta = a_end - p_end;
+		const qreal a_start = abs_a_start - pixels_offset;
+		a_end = abs_a_end - pixels_offset;
+
+		const qreal a_width = a_end - a_start;
+		const qreal delta = a_end - prev_end;
 
 		bool a_is_separate = false;
 
 		// Annotation wider than the threshold for a useful label width?
 		if (a_width >= min_useful_label_width_) {
 			for (const QString &ann_text : a.annotations()) {
-				const int w = p.boundingRect(QRectF(), 0, ann_text).width();
+				const qreal w = p.boundingRect(QRectF(), 0, ann_text).width();
 				// Annotation wide enough to fit a label? Don't put it in a block then
 				if (w <= a_width) {
 					a_is_separate = true;
@@ -366,32 +471,44 @@ void DecodeTrace::draw_annotations(vector<pv::data::decode::Annotation> annotati
 		// Were the previous and this annotation more than a pixel apart?
 		if ((abs(delta) > 1) || a_is_separate) {
 			// Block was broken, draw annotations that form the current block
-			if (a_block.size() == 1) {
-				draw_annotation(a_block.front(), p, h, pp, y, row_color,
+			if (block_ann_count == 1)
+				draw_annotation(*prev_ann, p, h, pp, y, row_color,
 					row_title_width);
-			}
-			else
-				draw_annotation_block(a_block, p, h, y, row_color);
+			else if (block_ann_count > 0)
+				draw_annotation_block(block_start, prev_end, block_class,
+					block_class_uniform, p, h, y, row_color);
 
-			a_block.clear();
+			block_ann_count = 0;
 		}
 
 		if (a_is_separate) {
 			draw_annotation(a, p, h, pp, y, row_color, row_title_width);
 			// Next annotation must start a new block. delta will be > 1
-			// because we set p_end to INT_MIN but that's okay since
-			// a_block will be empty, so nothing will be drawn
-			p_end = INT_MIN;
+			// because we set prev_end to INT_MIN but that's okay since
+			// block_ann_count will be 0 and nothing will be drawn
+			prev_end = INT_MIN;
+			block_ann_count = 0;
 		} else {
-			a_block.push_back(a);
-			p_end = a_end;
+			prev_end = a_end;
+			prev_ann = &a;
+
+			if (block_ann_count == 0) {
+				block_start = a_start;
+				block_class = a.ann_class();
+				block_class_uniform = true;
+			} else
+				if (a.ann_class() != block_class)
+					block_class_uniform = false;
+
+			block_ann_count++;
 		}
 	}
 
-	if (a_block.size() == 1)
-		draw_annotation(a_block.front(), p, h, pp, y, row_color, row_title_width);
-	else
-		draw_annotation_block(a_block, p, h, y, row_color);
+	if (block_ann_count == 1)
+		draw_annotation(*prev_ann, p, h, pp, y, row_color, row_title_width);
+	else if (block_ann_count > 0)
+		draw_annotation_block(block_start, prev_end, block_class,
+			block_class_uniform, p, h, y, row_color);
 }
 
 void DecodeTrace::draw_annotation(const pv::data::decode::Annotation &a,
@@ -419,35 +536,12 @@ void DecodeTrace::draw_annotation(const pv::data::decode::Annotation &a,
 		draw_range(a, p, h, start, end, y, pp, row_title_width);
 }
 
-void DecodeTrace::draw_annotation_block(
-	vector<pv::data::decode::Annotation> annotations, QPainter &p, int h,
+void DecodeTrace::draw_annotation_block(qreal start, qreal end,
+	Annotation::Class ann_class, bool use_ann_format, QPainter &p, int h,
 	int y, QColor row_color) const
 {
-	using namespace pv::data::decode;
-
-	if (annotations.empty())
-		return;
-
-	double samples_per_pixel, pixels_offset;
-	tie(pixels_offset, samples_per_pixel) =
-		get_pixels_offset_samples_per_pixel();
-
-	const double start = annotations.front().start_sample() /
-		samples_per_pixel - pixels_offset;
-	const double end = annotations.back().end_sample() /
-		samples_per_pixel - pixels_offset;
-
 	const double top = y + .5 - h / 2;
 	const double bottom = y + .5 + h / 2;
-
-	QColor color = get_annotation_color(row_color, annotations.front().ann_class());
-
-	// Check if all annotations are of the same type (i.e. we can use one color)
-	// or if we should use a neutral color (i.e. gray)
-	const Annotation::Class ann_class = annotations.front().ann_class();
-	const bool single_class = all_of(
-		annotations.begin(), annotations.end(),
-		[&](const Annotation &a) { return a.ann_class() == ann_class; });
 
 	const QRectF rect(start, top, end - start, bottom - top);
 	const int r = h / 4;
@@ -456,17 +550,27 @@ void DecodeTrace::draw_annotation_block(
 	p.setBrush(Qt::white);
 	p.drawRoundedRect(rect, r, r);
 
-	p.setPen((single_class ? color.darker() : Qt::gray));
-	p.setBrush(QBrush((single_class ? color : Qt::gray), Qt::Dense4Pattern));
+	// If all annotations in this block are of the same type, we can use the
+	// one format that all of these annotations have. Otherwise, we should use
+	// a neutral color (i.e. gray)
+	if (use_ann_format) {
+		const QColor color = get_annotation_color(row_color, ann_class);
+		p.setPen(color.darker());
+		p.setBrush(QBrush(color, Qt::Dense4Pattern));
+	} else {
+		p.setPen(Qt::gray);
+		p.setBrush(QBrush(Qt::gray, Qt::Dense4Pattern));
+	}
+
 	p.drawRoundedRect(rect, r, r);
 }
 
 void DecodeTrace::draw_instant(const pv::data::decode::Annotation &a, QPainter &p,
-	int h, double x, int y) const
+	int h, qreal x, int y) const
 {
 	const QString text = a.annotations().empty() ?
 		QString() : a.annotations().back();
-	const double w = min((double)p.boundingRect(QRectF(), 0, text).width(),
+	const qreal w = min((qreal)p.boundingRect(QRectF(), 0, text).width(),
 		0.0) + h;
 	const QRectF rect(x - w / 2, y - h / 2, w, h);
 
@@ -477,11 +581,11 @@ void DecodeTrace::draw_instant(const pv::data::decode::Annotation &a, QPainter &
 }
 
 void DecodeTrace::draw_range(const pv::data::decode::Annotation &a, QPainter &p,
-	int h, double start, double end, int y, const ViewItemPaintParams &pp,
+	int h, qreal start, qreal end, int y, const ViewItemPaintParams &pp,
 	int row_title_width) const
 {
-	const double top = y + .5 - h / 2;
-	const double bottom = y + .5 + h / 2;
+	const qreal top = y + .5 - h / 2;
+	const qreal bottom = y + .5 + h / 2;
 	const vector<QString> annotations = a.annotations();
 
 	// If the two ends are within 1 pixel, draw a vertical line
@@ -490,7 +594,7 @@ void DecodeTrace::draw_range(const pv::data::decode::Annotation &a, QPainter &p,
 		return;
 	}
 
-	const double cap_width = min((end - start) / 4, EndCapWidth);
+	const qreal cap_width = min((end - start) / 4, EndCapWidth);
 
 	QPointF pts[] = {
 		QPointF(start, y + .5f),
@@ -542,17 +646,18 @@ void DecodeTrace::draw_error(QPainter &p, const QString &message,
 {
 	const int y = get_visual_y();
 
+	double samples_per_pixel, pixels_offset;
+	tie(pixels_offset, samples_per_pixel) = get_pixels_offset_samples_per_pixel();
+
 	p.setPen(ErrorBgColor.darker());
 	p.setBrush(ErrorBgColor);
 
-	const QRectF bounding_rect =
-		QRectF(pp.left(), INT_MIN / 2 + y, pp.right(), INT_MAX);
-	const QRectF text_rect = p.boundingRect(bounding_rect,
-		Qt::AlignCenter, message);
-	const float r = text_rect.height() / 4;
+	const QRectF bounding_rect = QRectF(pp.left(), INT_MIN / 2 + y, pp.right(), INT_MAX);
 
-	p.drawRoundedRect(text_rect.adjusted(-r, -r, r, r), r, r,
-		Qt::AbsoluteSize);
+	const QRectF text_rect = p.boundingRect(bounding_rect, Qt::AlignCenter, message);
+	const qreal r = text_rect.height() / 4;
+
+	p.drawRoundedRect(text_rect.adjusted(-r, -r, r, r), r, r, Qt::AbsoluteSize);
 
 	p.setPen(Qt::black);
 	p.drawText(text_rect, message);
@@ -569,7 +674,7 @@ void DecodeTrace::draw_unresolved_period(QPainter &p, int h, int left, int right
 	if (sample_count == 0)
 		return;
 
-	const int64_t samples_decoded = decode_signal_->get_decoded_sample_count(current_segment_);
+	const int64_t samples_decoded = decode_signal_->get_decoded_sample_count(current_segment_, true);
 	if (sample_count == samples_decoded)
 		return;
 
@@ -581,7 +686,7 @@ void DecodeTrace::draw_unresolved_period(QPainter &p, int h, int left, int right
 		samples_per_pixel - pixels_offset, left - 1.0);
 	const double end = min(sample_count / samples_per_pixel -
 		pixels_offset, right + 1.0);
-	const QRectF no_decode_rect(start, y - (h / 2) + 0.5, end - start, h);
+	const QRectF no_decode_rect(start, y - (h / 2) - 0.5, end - start, h);
 
 	p.setPen(QPen(Qt::NoPen));
 	p.setBrush(Qt::white);
@@ -614,7 +719,7 @@ pair<double, double> DecodeTrace::get_pixels_offset_samples_per_pixel() const
 	return make_pair(pixels_offset, samplerate * scale);
 }
 
-pair<uint64_t, uint64_t> DecodeTrace::get_sample_range(
+pair<uint64_t, uint64_t> DecodeTrace::get_view_sample_range(
 	int x_start, int x_end) const
 {
 	double samples_per_pixel, pixels_offset;
@@ -684,12 +789,12 @@ const QString DecodeTrace::get_annotation_at_point(const QPoint &point)
 		return QString();
 
 	const pair<uint64_t, uint64_t> sample_range =
-		get_sample_range(point.x(), point.x() + 1);
+		get_view_sample_range(point.x(), point.x() + 1);
 	const int row = get_row_at_point(point);
 	if (row < 0)
 		return QString();
 
-	vector<pv::data::decode::Annotation> annotations;
+	vector<Annotation> annotations;
 
 	decode_signal_->get_annotation_subset(annotations, visible_rows_[row],
 		current_segment_, sample_range.first, sample_range.second);
@@ -700,6 +805,8 @@ const QString DecodeTrace::get_annotation_at_point(const QPoint &point)
 
 void DecodeTrace::hover_point_changed(const QPoint &hp)
 {
+	Trace::hover_point_changed(hp);
+
 	assert(owner_);
 
 	const View *const view = owner_->view();
@@ -865,6 +972,62 @@ QComboBox* DecodeTrace::create_channel_selector_init_state(QWidget *parent,
 	return selector;
 }
 
+void DecodeTrace::export_annotations(vector<Annotation> *annotations) const
+{
+	using namespace pv::data::decode;
+
+	GlobalSettings settings;
+	const QString dir = settings.value("MainWindow/SaveDirectory").toString();
+
+	const QString file_name = QFileDialog::getSaveFileName(
+		owner_->view(), tr("Export annotations"), dir, tr("Text Files (*.txt);;All Files (*)"));
+
+	if (file_name.isEmpty())
+		return;
+
+	QString format = settings.value(GlobalSettings::Key_Dec_ExportFormat).toString();
+	const QString quote = format.contains("%q") ? "\"" : "";
+	format = format.remove("%q");
+
+	QFile file(file_name);
+	if (file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+		QTextStream out_stream(&file);
+
+		for (Annotation &ann : *annotations) {
+			const QString sample_range = QString("%1-%2") \
+				.arg(QString::number(ann.start_sample()), QString::number(ann.end_sample()));
+
+			const QString class_name = quote + ann.row()->class_name() + quote;
+
+			QString all_ann_text;
+			for (const QString &s : ann.annotations())
+				all_ann_text = all_ann_text + quote + s + quote + ",";
+			all_ann_text.chop(1);
+
+			const QString first_ann_text = quote + ann.annotations().front() + quote;
+
+			QString out_text = format;
+			out_text = out_text.replace("%s", sample_range);
+			out_text = out_text.replace("%d",
+				quote + QString::fromUtf8(ann.row()->decoder()->name) + quote);
+			out_text = out_text.replace("%c", class_name);
+			out_text = out_text.replace("%1", first_ann_text);
+			out_text = out_text.replace("%a", all_ann_text);
+			out_stream << out_text << '\n';
+		}
+
+		if (out_stream.status() == QTextStream::Ok)
+			return;
+	}
+
+	QMessageBox msg(owner_->view());
+	msg.setText(tr("Error"));
+	msg.setInformativeText(tr("File %1 could not be written to.").arg(file_name));
+	msg.setStandardButtons(QMessageBox::Ok);
+	msg.setIcon(QMessageBox::Warning);
+	msg.exec();
+}
+
 void DecodeTrace::on_new_annotations()
 {
 	if (!delayed_trace_updater_.isActive())
@@ -890,6 +1053,14 @@ void DecodeTrace::on_decode_finished()
 {
 	if (owner_)
 		owner_->row_item_appearance_changed(false, true);
+}
+
+void DecodeTrace::on_pause_decode()
+{
+	if (decode_signal_->is_paused())
+		decode_signal_->resume_decode();
+	else
+		decode_signal_->pause_decode();
 }
 
 void DecodeTrace::delete_pressed()
@@ -969,6 +1140,104 @@ void DecodeTrace::on_show_hide_decoder(int index)
 
 	if (owner_)
 		owner_->row_item_appearance_changed(false, true);
+}
+
+void DecodeTrace::on_export_row()
+{
+	selected_sample_range_ = make_pair(0, numeric_limits<uint64_t>::max());
+	on_export_row_from_here();
+}
+
+void DecodeTrace::on_export_all_rows()
+{
+	selected_sample_range_ = make_pair(0, numeric_limits<uint64_t>::max());
+	on_export_all_rows_from_here();
+}
+
+void DecodeTrace::on_export_row_with_cursor()
+{
+	const View *view = owner_->view();
+	assert(view);
+
+	if (!view->cursors()->enabled())
+		return;
+
+	const double samplerate = session_.get_samplerate();
+
+	const pv::util::Timestamp& start_time = view->cursors()->first()->time();
+	const pv::util::Timestamp& end_time = view->cursors()->second()->time();
+
+	const uint64_t start_sample = (uint64_t)max(
+		0.0, start_time.convert_to<double>() * samplerate);
+	const uint64_t end_sample = (uint64_t)max(
+		0.0, end_time.convert_to<double>() * samplerate);
+
+	// Are both cursors negative and thus were clamped to 0?
+	if ((start_sample == 0) && (end_sample == 0))
+		return;
+
+	selected_sample_range_ = make_pair(start_sample, end_sample);
+	on_export_row_from_here();
+}
+
+void DecodeTrace::on_export_all_rows_with_cursor()
+{
+	const View *view = owner_->view();
+	assert(view);
+
+	if (!view->cursors()->enabled())
+		return;
+
+	const double samplerate = session_.get_samplerate();
+
+	const pv::util::Timestamp& start_time = view->cursors()->first()->time();
+	const pv::util::Timestamp& end_time = view->cursors()->second()->time();
+
+	const uint64_t start_sample = (uint64_t)max(
+		0.0, start_time.convert_to<double>() * samplerate);
+	const uint64_t end_sample = (uint64_t)max(
+		0.0, end_time.convert_to<double>() * samplerate);
+
+	// Are both cursors negative and thus were clamped to 0?
+	if ((start_sample == 0) && (end_sample == 0))
+		return;
+
+	selected_sample_range_ = make_pair(start_sample, end_sample);
+	on_export_all_rows_from_here();
+}
+
+void DecodeTrace::on_export_row_from_here()
+{
+	using namespace pv::data::decode;
+
+	if (!selected_row_)
+		return;
+
+	vector<Annotation> *annotations = new vector<Annotation>();
+
+	decode_signal_->get_annotation_subset(*annotations, *selected_row_,
+		current_segment_, selected_sample_range_.first, selected_sample_range_.second);
+
+	if (annotations->empty())
+		return;
+
+	export_annotations(annotations);
+	delete annotations;
+}
+
+void DecodeTrace::on_export_all_rows_from_here()
+{
+	using namespace pv::data::decode;
+
+	vector<Annotation> *annotations = new vector<Annotation>();
+
+	decode_signal_->get_annotation_subset(*annotations, current_segment_,
+			selected_sample_range_.first, selected_sample_range_.second);
+
+	if (!annotations->empty())
+		export_annotations(annotations);
+
+	delete annotations;
 }
 
 } // namespace trace

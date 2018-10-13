@@ -23,6 +23,7 @@
 #include <map>
 
 #include <glib.h>
+#include <glibmm/variant.h>
 
 #include <QSettings>
 #include <QString>
@@ -51,11 +52,16 @@ public:
 	static const QString Key_View_ColoredBG;
 	static const QString Key_View_StickyScrolling;
 	static const QString Key_View_ShowSamplingPoints;
+	static const QString Key_View_FillSignalHighAreas;
+	static const QString Key_View_FillSignalHighAreaColor;
 	static const QString Key_View_ShowAnalogMinorGrid;
 	static const QString Key_View_ConversionThresholdDispMode;
 	static const QString Key_View_DefaultDivHeight;
 	static const QString Key_View_DefaultLogicHeight;
+	static const QString Key_View_ShowHoverMarker;
+	static const QString Key_View_SnapDistance;
 	static const QString Key_Dec_InitialStateConfigurable;
+	static const QString Key_Dec_ExportFormat;
 	static const QString Key_Log_BufferSize;
 	static const QString Key_Log_NotifyOfStacktrace;
 
@@ -96,6 +102,10 @@ public:
 	static void store_gvariant(QSettings &settings, GVariant *v);
 
 	static GVariant* restore_gvariant(QSettings &settings);
+
+	static void store_variantbase(QSettings &settings, Glib::VariantBase v);
+
+	static Glib::VariantBase restore_variantbase(QSettings &settings);
 
 private:
 	static vector<GlobalSettingsInterface*> callbacks_;

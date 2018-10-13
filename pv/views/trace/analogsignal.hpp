@@ -25,7 +25,6 @@
 #include <QComboBox>
 #include <QSpinBox>
 
-#include <pv/globalsettings.hpp>
 #include <pv/views/trace/signal.hpp>
 
 using std::pair;
@@ -42,7 +41,7 @@ class SignalBase;
 namespace views {
 namespace trace {
 
-class AnalogSignal : public Signal, public GlobalSettingsInterface
+class AnalogSignal : public Signal
 {
 	Q_OBJECT
 
@@ -75,8 +74,6 @@ private:
 public:
 	AnalogSignal(pv::Session &session, shared_ptr<data::SignalBase> base);
 
-	~AnalogSignal();
-
 	shared_ptr<pv::data::SignalData> data() const;
 
 	virtual void save_settings(QSettings &settings) const;
@@ -89,23 +86,7 @@ public:
 	 */
 	pair<int, int> v_extents() const;
 
-	/**
-	 * Returns the offset to show the drag handle.
-	 */
-	int scale_handle_offset() const;
-
-	/**
-	 * Handles the scale handle being dragged to an offset.
-	 * @param offset the offset the scale handle was dragged to.
-	 */
-	void scale_handle_dragged(int offset);
-
-	/**
-	 * @copydoc pv::view::Signal::signal_scale_handle_drag_release()
-	 */
-	void scale_handle_drag_release();
-
-	void on_setting_changed(const QString &key, const QVariant &value);
+	virtual void on_setting_changed(const QString &key, const QVariant &value);
 
 	/**
 	 * Paints the background layer of the signal with a QPainter
@@ -160,10 +141,24 @@ private:
 
 	void update_conversion_widgets();
 
+	/**
+	 * Determines the closest level change (i.e. edge) to a given sample, which
+	 * is useful for e.g. the "snap to edge" functionality.
+	 *
+	 * @param sample_pos Sample to use
+	 * @return The changes left and right of the given position
+	 */
+	virtual vector<data::LogicSegment::EdgePair> get_nearest_level_changes(uint64_t sample_pos);
+
 	void perform_autoranging(bool keep_divs, bool force_update);
+
+	void reset_pixel_values();
+	void process_next_sample_value(float x, float value);
 
 protected:
 	void populate_popup_form(QWidget *parent, QFormLayout *form);
+
+	virtual void hover_point_changed(const QPoint &hp);
 
 private Q_SLOTS:
 	void on_min_max_changed(float min, float max);
@@ -191,7 +186,6 @@ private:
 
 	float scale_;
 	int scale_index_;
-	int scale_index_drag_offset_;
 
 	int div_height_;
 	int pos_vdivs_, neg_vdivs_;  // divs per positive/negative side
@@ -200,6 +194,12 @@ private:
 	DisplayType display_type_;
 	bool autoranging_;
 	int conversion_threshold_disp_mode_;
+
+	vector<float> value_at_pixel_pos_;
+	float value_at_hover_pos_;
+	float prev_value_at_pixel_;  // Only used during lookup table update
+	float min_value_at_pixel_, max_value_at_pixel_;  // Only used during lookup table update
+	int current_pixel_pos_;  // Only used during lookup table update
 };
 
 } // namespace trace

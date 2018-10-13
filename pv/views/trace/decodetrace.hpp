@@ -33,6 +33,7 @@
 #include <QTimer>
 
 #include <pv/binding/decoder.hpp>
+#include <pv/data/decode/annotation.hpp>
 #include <pv/data/decode/row.hpp>
 #include <pv/data/signalbase.hpp>
 
@@ -117,7 +118,9 @@ public:
 
 	void populate_popup_form(QWidget *parent, QFormLayout *form);
 
-	QMenu* create_context_menu(QWidget *parent);
+	QMenu* create_header_context_menu(QWidget *parent);
+
+	virtual QMenu* create_view_context_menu(QWidget *parent, QPoint &click_pos);
 
 	void delete_pressed();
 
@@ -130,14 +133,15 @@ private:
 		int h, const ViewItemPaintParams &pp, int y,
 		QColor row_color, int row_title_width) const;
 
-	void draw_annotation_block(vector<pv::data::decode::Annotation> annotations,
+	void draw_annotation_block(qreal start, qreal end,
+		pv::data::decode::Annotation::Class ann_class, bool use_ann_format,
 		QPainter &p, int h, int y, QColor row_color) const;
 
 	void draw_instant(const pv::data::decode::Annotation &a, QPainter &p,
-		int h, double x, int y) const;
+		int h, qreal x, int y) const;
 
 	void draw_range(const pv::data::decode::Annotation &a, QPainter &p,
-		int h, double start, double end, int y, const ViewItemPaintParams &pp,
+		int h, qreal start, qreal end, int y, const ViewItemPaintParams &pp,
 		int row_title_width) const;
 
 	void draw_error(QPainter &p, const QString &message,
@@ -155,7 +159,7 @@ private:
 	 * @return Returns a pair containing the start sample and the end
 	 * 	sample that correspond to the start and end coordinates.
 	 */
-	pair<uint64_t, uint64_t> get_sample_range(int x_start, int x_end) const;
+	pair<uint64_t, uint64_t> get_view_sample_range(int x_start, int x_end) const;
 
 	QColor get_row_color(int row_index) const;
 	QColor get_annotation_color(QColor row_color, int annotation_index) const;
@@ -173,14 +177,17 @@ private:
 	QComboBox* create_channel_selector_init_state(QWidget *parent,
 		const data::DecodeChannel *ch);
 
+	void export_annotations(vector<data::decode::Annotation> *annotations) const;
+
 public:
-	void hover_point_changed(const QPoint &hp);
+	virtual void hover_point_changed(const QPoint &hp);
 
 private Q_SLOTS:
 	void on_new_annotations();
 	void on_delayed_trace_update();
 	void on_decode_reset();
 	void on_decode_finished();
+	void on_pause_decode();
 
 	void on_delete();
 
@@ -196,16 +203,25 @@ private Q_SLOTS:
 
 	void on_show_hide_decoder(int index);
 
+	void on_export_row();
+	void on_export_all_rows();
+	void on_export_row_with_cursor();
+	void on_export_all_rows_with_cursor();
+	void on_export_row_from_here();
+	void on_export_all_rows_from_here();
+
 private:
 	pv::Session &session_;
 	shared_ptr<data::DecodeSignal> decode_signal_;
 
 	vector<data::decode::Row> visible_rows_;
-	uint64_t decode_start_, decode_end_;
 
 	map<QComboBox*, uint16_t> channel_id_map_;  // channel selector -> decode channel ID
 	map<QComboBox*, uint16_t> init_state_map_;  // init state selector -> decode channel ID
 	list< shared_ptr<pv::binding::Decoder> > bindings_;
+
+	data::decode::Row *selected_row_;
+	pair<uint64_t, uint64_t> selected_sample_range_;
 
 	vector<pv::widgets::DecoderGroupBox*> decoder_forms_;
 

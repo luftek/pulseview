@@ -57,6 +57,8 @@ using sigrok::Trigger;
 using sigrok::TriggerMatch;
 using sigrok::TriggerMatchType;
 
+using pv::data::LogicSegment;
+
 namespace pv {
 namespace views {
 namespace trace {
@@ -103,6 +105,7 @@ LogicSignal::LogicSignal(
 	shared_ptr<data::SignalBase> base) :
 	Signal(session, base),
 	device_(device),
+	trigger_types_(get_trigger_types()),
 	trigger_none_(nullptr),
 	trigger_rising_(nullptr),
 	trigger_high_(nullptr),
@@ -163,18 +166,6 @@ pair<int, int> LogicSignal::v_extents() const
 	return make_pair(-signal_height_ - signal_margin, signal_margin);
 }
 
-int LogicSignal::scale_handle_offset() const
-{
-	return -signal_height_;
-}
-
-void LogicSignal::scale_handle_dragged(int offset)
-{
-	const int font_height = QFontMetrics(QApplication::font()).height();
-	const int units = (-offset / font_height);
-	signal_height_ = ((units < 1) ? 1 : units) * font_height;
-}
-
 void LogicSignal::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 {
 	QLineF *line;
@@ -189,10 +180,10 @@ void LogicSignal::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 	if (!base_->enabled())
 		return;
 
-	const float high_offset = y - signal_height_ + 0.5f;
 	const float low_offset = y + 0.5f;
+	const float high_offset = low_offset - signal_height_;
 
-	shared_ptr<pv::data::LogicSegment> segment = get_logic_segment_to_paint();
+	shared_ptr<LogicSegment> segment = get_logic_segment_to_paint();
 	if (!segment || (segment->get_sample_count() == 0))
 		return;
 
@@ -219,6 +210,11 @@ void LogicSignal::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 		samples_per_pixel / Oversampling, base_->index());
 	assert(edges.size() >= 2);
 
+	const float first_sample_x =
+		pp.left() + (edges.front().first / samples_per_pixel - pixels_offset);
+	const float last_sample_x =
+		pp.left() + (edges.back().first / samples_per_pixel - pixels_offset);
+
 	// Check whether we need to paint the sampling points
 	GlobalSettings settings;
 	const bool show_sampling_points =
@@ -226,24 +222,39 @@ void LogicSignal::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 		(samples_per_pixel < 0.25);
 
 	vector<QRectF> sampling_points;
-	float sampling_point_x = 0.0f;
+	float sampling_point_x = first_sample_x;
 	int64_t sampling_point_sample = start_sample;
 	const int w = 2;
 
-	if (show_sampling_points) {
+	if (show_sampling_points)
 		sampling_points.reserve(end_sample - start_sample + 1);
-		sampling_point_x = (edges.cbegin()->first / samples_per_pixel - pixels_offset) + pp.left();
-	}
+
+	// Check whether we need to fill the high areas
+	const bool fill_high_areas =
+		settings.value(GlobalSettings::Key_View_FillSignalHighAreas).toBool();
+	float high_start_x;
+	vector<QRectF> high_rects;
 
 	// Paint the edges
 	const unsigned int edge_count = edges.size() - 2;
 	QLineF *const edge_lines = new QLineF[edge_count];
 	line = edge_lines;
 
+	if (edges.front().second)
+		high_start_x = first_sample_x;  // Beginning of signal is high
+
 	for (auto i = edges.cbegin() + 1; i != edges.cend() - 1; i++) {
 		const float x = ((*i).first / samples_per_pixel -
 			pixels_offset) + pp.left();
 		*line++ = QLineF(x, high_offset, x, low_offset);
+
+		if (fill_high_areas) {
+			if ((*i).second)
+				high_start_x = x;
+			else
+				high_rects.emplace_back(high_start_x, high_offset,
+					x - high_start_x, signal_height_);
+		}
 
 		if (show_sampling_points)
 			while (sampling_point_sample < (*i).first) {
@@ -265,6 +276,19 @@ void LogicSignal::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 			sampling_point_sample++;
 			sampling_point_x += pixels_per_sample;
 		};
+
+	if (fill_high_areas) {
+		// Add last high rectangle if the signal is still high at the end of the view
+		if ((edges.cend() - 1)->second)
+			high_rects.emplace_back(high_start_x, high_offset,
+				last_sample_x - high_start_x, signal_height_);
+
+		const QColor fill_color = QColor::fromRgba(settings.value(
+			GlobalSettings::Key_View_FillSignalHighAreaColor).value<uint32_t>());
+		p.setPen(fill_color);
+		p.setBrush(fill_color);
+		p.drawRects((const QRectF*)(high_rects.data()), high_rects.size());
+	}
 
 	p.setPen(EdgeColor);
 	p.drawLines(edge_lines, edge_count);
@@ -292,39 +316,70 @@ void LogicSignal::paint_mid(QPainter &p, ViewItemPaintParams &pp)
 
 void LogicSignal::paint_fore(QPainter &p, ViewItemPaintParams &pp)
 {
-	// Draw the trigger marker
-	if (!trigger_match_ || !base_->enabled())
-		return;
+	if (base_->enabled()) {
+		if (trigger_match_) {
+			// Draw the trigger marker
+			const int y = get_visual_y();
 
-	const int y = get_visual_y();
-	const vector<int32_t> trig_types = get_trigger_types();
-	for (int32_t type_id : trig_types) {
-		const TriggerMatchType *const type =
-			TriggerMatchType::get(type_id);
-		if (trigger_match_ != type || type_id < 0 ||
-			(size_t)type_id >= countof(TriggerMarkerIcons) ||
-			!TriggerMarkerIcons[type_id])
-			continue;
+			for (int32_t type_id : trigger_types_) {
+				const TriggerMatchType *const type =
+					TriggerMatchType::get(type_id);
+				if (trigger_match_ != type || type_id < 0 ||
+					(size_t)type_id >= countof(TriggerMarkerIcons) ||
+					!TriggerMarkerIcons[type_id])
+					continue;
 
-		const QPixmap *const pixmap = get_pixmap(
-			TriggerMarkerIcons[type_id]);
-		if (!pixmap)
-			continue;
+				const QPixmap *const pixmap = get_pixmap(
+					TriggerMarkerIcons[type_id]);
+				if (!pixmap)
+					continue;
 
-		const float pad = TriggerMarkerPadding - 0.5f;
-		const QSize size = pixmap->size();
-		const QPoint point(
-			pp.right() - size.width() - pad * 2,
-			y - (signal_height_ + size.height()) / 2);
+				const float pad = TriggerMarkerPadding - 0.5f;
+				const QSize size = pixmap->size();
+				const QPoint point(
+					pp.right() - size.width() - pad * 2,
+					y - (signal_height_ + size.height()) / 2);
 
-		p.setPen(QPen(TriggerMarkerBackgroundColor.darker()));
-		p.setBrush(TriggerMarkerBackgroundColor);
-		p.drawRoundedRect(QRectF(point, size).adjusted(
-			-pad, -pad, pad, pad), pad, pad);
-		p.drawPixmap(point, *pixmap);
+				p.setPen(QPen(TriggerMarkerBackgroundColor.darker()));
+				p.setBrush(TriggerMarkerBackgroundColor);
+				p.drawRoundedRect(QRectF(point, size).adjusted(
+					-pad, -pad, pad, pad), pad, pad);
+				p.drawPixmap(point, *pixmap);
 
-		break;
+				break;
+			}
+		}
+
+		if (show_hover_marker_)
+			paint_hover_marker(p);
 	}
+}
+
+vector<LogicSegment::EdgePair> LogicSignal::get_nearest_level_changes(uint64_t sample_pos)
+{
+	assert(base_);
+	assert(owner_);
+
+	if (sample_pos == 0)
+		return vector<LogicSegment::EdgePair>();
+
+	shared_ptr<LogicSegment> segment = get_logic_segment_to_paint();
+	if (!segment || (segment->get_sample_count() == 0))
+		return vector<LogicSegment::EdgePair>();
+
+	const View *view = owner_->view();
+	assert(view);
+	const double samples_per_pixel = base_->get_samplerate() * view->scale();
+
+	vector<LogicSegment::EdgePair> edges;
+
+	segment->get_surrounding_edges(edges, sample_pos,
+		samples_per_pixel / Oversampling, base_->index());
+
+	if (edges.empty())
+		return vector<LogicSegment::EdgePair>();
+
+	return edges;
 }
 
 void LogicSignal::paint_caps(QPainter &p, QLineF *const lines,
@@ -508,6 +563,12 @@ void LogicSignal::populate_popup_form(QWidget *parent, QFormLayout *form)
 			trigger_bar_->addAction(action);
 			action->setChecked(trigger_match_ == type);
 		}
+
+		// Only allow triggers to be changed when we're stopped
+		if (session_.get_capture_state() != Session::Stopped)
+			for (QAction* action : trigger_bar_->findChildren<QAction*>())
+				action->setEnabled(false);
+
 		form->addRow(tr("Trigger"), trigger_bar_);
 	}
 }

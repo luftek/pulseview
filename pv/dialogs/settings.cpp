@@ -20,7 +20,6 @@
 #include "config.h"
 
 #include <glib.h>
-#include <boost/version.hpp>
 
 #include <QApplication>
 #include <QComboBox>
@@ -43,9 +42,11 @@
 
 #include "settings.hpp"
 
+#include "pv/application.hpp"
 #include "pv/devicemanager.hpp"
 #include "pv/globalsettings.hpp"
 #include "pv/logging.hpp"
+#include "pv/widgets/colorbutton.hpp"
 
 #include <libsigrokcxx/libsigrokcxx.hpp>
 
@@ -54,6 +55,7 @@
 #endif
 
 using std::shared_ptr;
+using pv::widgets::ColorButton;
 
 namespace pv {
 namespace dialogs {
@@ -229,9 +231,33 @@ QWidget *Settings::get_view_settings_form(QWidget *parent) const
 		SLOT(on_view_showSamplingPoints_changed(int)));
 	trace_view_layout->addRow(tr("Show data &sampling points"), cb);
 
+	cb = create_checkbox(GlobalSettings::Key_View_FillSignalHighAreas,
+		SLOT(on_view_fillSignalHighAreas_changed(int)));
+	trace_view_layout->addRow(tr("Fill high areas of logic signals"), cb);
+
+	ColorButton* high_fill_cb = new ColorButton(parent);
+	high_fill_cb->set_color(QColor::fromRgba(
+		settings.value(GlobalSettings::Key_View_FillSignalHighAreaColor).value<uint32_t>()));
+	connect(high_fill_cb, SIGNAL(selected(QColor)),
+		this, SLOT(on_view_fillSignalHighAreaColor_changed(QColor)));
+	trace_view_layout->addRow(tr("Fill high areas of logic signals"), high_fill_cb);
+
 	cb = create_checkbox(GlobalSettings::Key_View_ShowAnalogMinorGrid,
 		SLOT(on_view_showAnalogMinorGrid_changed(int)));
 	trace_view_layout->addRow(tr("Show analog minor grid in addition to div grid"), cb);
+
+	cb = create_checkbox(GlobalSettings::Key_View_ShowHoverMarker,
+		SLOT(on_view_showHoverMarker_changed(int)));
+	trace_view_layout->addRow(tr("Highlight mouse cursor using a vertical marker line"), cb);
+
+	QSpinBox *snap_distance_sb = new QSpinBox();
+	snap_distance_sb->setRange(0, 1000);
+	snap_distance_sb->setSuffix(tr(" pixels"));
+	snap_distance_sb->setValue(
+		settings.value(GlobalSettings::Key_View_SnapDistance).toInt());
+	connect(snap_distance_sb, SIGNAL(valueChanged(int)), this,
+		SLOT(on_view_snapDistance_changed(int)));
+	trace_view_layout->addRow(tr("Maximum distance from edges before cursors snap to them"), snap_distance_sb);
 
 	QComboBox *thr_disp_mode_cb = new QComboBox();
 	thr_disp_mode_cb->addItem(tr("None"), GlobalSettings::ConvThrDispMode_None);
@@ -264,9 +290,10 @@ QWidget *Settings::get_view_settings_form(QWidget *parent) const
 	return form;
 }
 
-QWidget *Settings::get_decoder_settings_form(QWidget *parent) const
+QWidget *Settings::get_decoder_settings_form(QWidget *parent)
 {
 #ifdef ENABLE_DECODE
+	GlobalSettings settings;
 	QCheckBox *cb;
 
 	QWidget *form = new QWidget(parent);
@@ -283,6 +310,20 @@ QWidget *Settings::get_decoder_settings_form(QWidget *parent) const
 		SLOT(on_dec_initialStateConfigurable_changed(int)));
 	decoder_layout->addRow(tr("Allow configuration of &initial signal state"), cb);
 
+	// Annotation export settings
+	ann_export_format_ = new QLineEdit();
+	ann_export_format_->setText(
+		settings.value(GlobalSettings::Key_Dec_ExportFormat).toString());
+	connect(ann_export_format_, SIGNAL(textChanged(const QString&)),
+		this, SLOT(on_dec_exportFormat_changed(const QString&)));
+	decoder_layout->addRow(tr("Annotation export format"), ann_export_format_);
+	QLabel *description_1 = new QLabel(tr("%s = sample range; %d: decoder name; %c: row name; %q: use quotations marks"));
+	description_1->setAlignment(Qt::AlignRight);
+	decoder_layout->addRow(description_1);
+	QLabel *description_2 = new QLabel(tr("%1: longest annotation text; %a: all annotation texts"));
+	description_2->setAlignment(Qt::AlignRight);
+	decoder_layout->addRow(description_2);
+
 	return form;
 #else
 	(void)parent;
@@ -290,36 +331,19 @@ QWidget *Settings::get_decoder_settings_form(QWidget *parent) const
 #endif
 }
 
-#ifdef ENABLE_DECODE
-static gint sort_pds(gconstpointer a, gconstpointer b)
-{
-	const struct srd_decoder *sda, *sdb;
-
-	sda = (const struct srd_decoder *)a;
-	sdb = (const struct srd_decoder *)b;
-	return strcmp(sda->id, sdb->id);
-}
-#endif
-
 QWidget *Settings::get_about_page(QWidget *parent) const
 {
-#ifdef ENABLE_DECODE
-	struct srd_decoder *dec;
-#endif
+	Application* a = qobject_cast<Application*>(QApplication::instance());
 
 	QLabel *icon = new QLabel();
 	icon->setPixmap(QPixmap(QString::fromUtf8(":/icons/pulseview.svg")));
 
-	/* Setup the version field */
-	QLabel *version_info = new QLabel();
-	version_info->setText(tr("%1 %2<br />%3<br /><a href=\"http://%4\">%4</a>")
-		.arg(QApplication::applicationName(),
-		QApplication::applicationVersion(),
+	// Setup the license field with the project homepage link
+	QLabel *gpl_home_info = new QLabel();
+	gpl_home_info->setText(tr("%1<br /><a href=\"http://%2\">%2</a>").arg(
 		tr("GNU GPL, version 3 or later"),
 		QApplication::organizationDomain()));
-	version_info->setOpenExternalLinks(true);
-
-	shared_ptr<sigrok::Context> context = device_manager_.context();
+	gpl_home_info->setOpenExternalLinks(true);
 
 	QString s;
 
@@ -327,129 +351,54 @@ QWidget *Settings::get_about_page(QWidget *parent) const
 
 	s.append("<table>");
 
-	/* Library info */
 	s.append("<tr><td colspan=\"2\"><b>" +
-		tr("Libraries and features:") + "</b></td></tr>");
-
-	s.append(QString("<tr><td><i>%1</i></td><td>%2</td></tr>")
-		.arg(QString("Qt"), qVersion()));
-	s.append(QString("<tr><td><i>%1</i></td><td>%2</td></tr>")
-		.arg(QString("glibmm"), PV_GLIBMM_VERSION));
-	s.append(QString("<tr><td><i>%1</i></td><td>%2</td></tr>")
-		.arg(QString("Boost"), BOOST_LIB_VERSION));
-
-	s.append(QString("<tr><td><i>%1</i></td><td>%2/%3 (rt: %4/%5)</td></tr>")
-		.arg(QString("libsigrok"), SR_PACKAGE_VERSION_STRING,
-		SR_LIB_VERSION_STRING, sr_package_version_string_get(),
-		sr_lib_version_string_get()));
-
-	GSList *l_orig = sr_buildinfo_libs_get();
-	for (GSList *l = l_orig; l; l = l->next) {
-		GSList *m = (GSList *)l->data;
-		const char *lib = (const char *)m->data;
-		const char *version = (const char *)m->next->data;
-		s.append(QString("<tr><td><i>- %1</i></td><td>%2</td></tr>")
-			.arg(QString(lib), QString(version)));
-		g_slist_free_full(m, g_free);
-	}
-	g_slist_free(l_orig);
-
-	char *host = sr_buildinfo_host_get();
-	s.append(QString("<tr><td><i>- Host</i></td><td>%1</td></tr>")
-		.arg(QString(host)));
-	g_free(host);
-
-	char *scpi_backends = sr_buildinfo_scpi_backends_get();
-	s.append(QString("<tr><td><i>- SCPI backends</i></td><td>%1</td></tr>")
-		.arg(QString(scpi_backends)));
-	g_free(scpi_backends);
-
-#ifdef ENABLE_DECODE
-	s.append(QString("<tr><td><i>%1</i></td><td>%2/%3 (rt: %4/%5)</td></tr>")
-		.arg(QString("libsigrokdecode"), SRD_PACKAGE_VERSION_STRING,
-		SRD_LIB_VERSION_STRING, srd_package_version_string_get(),
-		srd_lib_version_string_get()));
-
-	l_orig = srd_buildinfo_libs_get();
-	for (GSList *l = l_orig; l; l = l->next) {
-		GSList *m = (GSList *)l->data;
-		const char *lib = (const char *)m->data;
-		const char *version = (const char *)m->next->data;
-		s.append(QString("<tr><td><i>- %1</i></td><td>%2</td></tr>")
-			.arg(QString(lib), QString(version)));
-		g_slist_free_full(m, g_free);
-	}
-	g_slist_free(l_orig);
-
-	host = srd_buildinfo_host_get();
-	s.append(QString("<tr><td><i>- Host</i></td><td>%1</td></tr>")
-		.arg(QString(host)));
-	g_free(host);
-#endif
+		tr("Versions, libraries and features:") + "</b></td></tr>");
+	for (pair<QString, QString> &entry : a->get_version_info())
+		s.append(QString("<tr><td><i>%1</i></td><td>%2</td></tr>")
+			.arg(entry.first, entry.second));
 
 	s.append("<tr><td colspan=\"2\"></td></tr>");
 	s.append("<tr><td colspan=\"2\"><b>" +
 		tr("Firmware search paths:") + "</b></td></tr>");
-
-	l_orig = sr_resourcepaths_get(SR_RESOURCE_FIRMWARE);
-	for (GSList *l = l_orig; l; l = l->next)
-		s.append(QString("<tr><td colspan=\"2\">%1</td></tr>").arg(
-			QString((char*)l->data)));
-	g_slist_free_full(l_orig, g_free);
+	for (QString &entry : a->get_fw_path_list())
+		s.append(QString("<tr><td colspan=\"2\">%1</td></tr>").arg(entry));
 
 #ifdef ENABLE_DECODE
 	s.append("<tr><td colspan=\"2\"></td></tr>");
 	s.append("<tr><td colspan=\"2\"><b>" +
 		tr("Protocol decoder search paths:") + "</b></td></tr>");
-
-	l_orig = srd_searchpaths_get();
-	for (GSList *l = l_orig; l; l = l->next)
-		s.append(QString("<tr><td colspan=\"2\">%1</td></tr>").arg(
-			QString((char*)l->data)));
-	g_slist_free_full(l_orig, g_free);
+	for (QString &entry : a->get_pd_path_list())
+		s.append(QString("<tr><td colspan=\"2\">%1</td></tr>").arg(entry));
 #endif
 
-	/* Set up the supported field */
 	s.append("<tr><td colspan=\"2\"></td></tr>");
 	s.append("<tr><td colspan=\"2\"><b>" +
 		tr("Supported hardware drivers:") + "</b></td></tr>");
-	for (auto entry : context->drivers()) {
+	for (pair<QString, QString> &entry : a->get_driver_list())
 		s.append(QString("<tr><td class=\"id\"><i>%1</i></td><td>%2</td></tr>")
-			.arg(QString::fromUtf8(entry.first.c_str()),
-				QString::fromUtf8(entry.second->long_name().c_str())));
-	}
+			.arg(entry.first, entry.second));
 
 	s.append("<tr><td colspan=\"2\"></td></tr>");
 	s.append("<tr><td colspan=\"2\"><b>" +
 		tr("Supported input formats:") + "</b></td></tr>");
-	for (auto entry : context->input_formats()) {
+	for (pair<QString, QString> &entry : a->get_input_format_list())
 		s.append(QString("<tr><td class=\"id\"><i>%1</i></td><td>%2</td></tr>")
-			.arg(QString::fromUtf8(entry.first.c_str()),
-				QString::fromUtf8(entry.second->description().c_str())));
-	}
+			.arg(entry.first, entry.second));
 
 	s.append("<tr><td colspan=\"2\"></td></tr>");
 	s.append("<tr><td colspan=\"2\"><b>" +
 		tr("Supported output formats:") + "</b></td></tr>");
-	for (auto entry : context->output_formats()) {
+	for (pair<QString, QString> &entry : a->get_output_format_list())
 		s.append(QString("<tr><td class=\"id\"><i>%1</i></td><td>%2</td></tr>")
-			.arg(QString::fromUtf8(entry.first.c_str()),
-				QString::fromUtf8(entry.second->description().c_str())));
-	}
+			.arg(entry.first, entry.second));
 
 #ifdef ENABLE_DECODE
 	s.append("<tr><td colspan=\"2\"></td></tr>");
 	s.append("<tr><td colspan=\"2\"><b>" +
 		tr("Supported protocol decoders:") + "</b></td></tr>");
-	GSList *sl = g_slist_copy((GSList *)srd_decoder_list());
-	sl = g_slist_sort(sl, sort_pds);
-	for (const GSList *l = sl; l; l = l->next) {
-		dec = (struct srd_decoder *)l->data;
+	for (pair<QString, QString> &entry : a->get_pd_list())
 		s.append(QString("<tr><td class=\"id\"><i>%1</i></td><td>%2</td></tr>")
-			.arg(QString::fromUtf8(dec->id),
-				QString::fromUtf8(dec->longname)));
-	}
-	g_slist_free(sl);
+			.arg(entry.first, entry.second));
 #endif
 
 	s.append("</table>");
@@ -460,10 +409,14 @@ QWidget *Settings::get_about_page(QWidget *parent) const
 	QTextBrowser *support_list = new QTextBrowser();
 	support_list->setDocument(supported_doc);
 
-	QGridLayout *layout = new QGridLayout();
-	layout->addWidget(icon, 0, 0, 1, 1);
-	layout->addWidget(version_info, 0, 1, 1, 1);
-	layout->addWidget(support_list, 1, 1, 1, 1);
+	QHBoxLayout *h_layout = new QHBoxLayout();
+	h_layout->setAlignment(Qt::AlignLeft);
+	h_layout->addWidget(icon);
+	h_layout->addWidget(gpl_home_info);
+
+	QVBoxLayout *layout = new QVBoxLayout();
+	layout->addLayout(h_layout);
+	layout->addWidget(support_list);
 
 	QWidget *page = new QWidget(parent);
 	page->setLayout(layout);
@@ -489,6 +442,7 @@ QWidget *Settings::get_logging_page(QWidget *parent) const
 	// Background buffer size
 	QSpinBox *buffersize_sb = new QSpinBox();
 	buffersize_sb->setSuffix(tr(" lines"));
+	buffersize_sb->setMinimum(Logging::MIN_BUFFER_SIZE);
 	buffersize_sb->setMaximum(Logging::MAX_BUFFER_SIZE);
 	buffersize_sb->setValue(
 		settings.value(GlobalSettings::Key_Log_BufferSize).toInt());
@@ -589,10 +543,34 @@ void Settings::on_view_showSamplingPoints_changed(int state)
 	settings.setValue(GlobalSettings::Key_View_ShowSamplingPoints, state ? true : false);
 }
 
+void Settings::on_view_fillSignalHighAreas_changed(int state)
+{
+	GlobalSettings settings;
+	settings.setValue(GlobalSettings::Key_View_FillSignalHighAreas, state ? true : false);
+}
+
+void Settings::on_view_fillSignalHighAreaColor_changed(QColor color)
+{
+	GlobalSettings settings;
+	settings.setValue(GlobalSettings::Key_View_FillSignalHighAreaColor, color.rgba());
+}
+
 void Settings::on_view_showAnalogMinorGrid_changed(int state)
 {
 	GlobalSettings settings;
 	settings.setValue(GlobalSettings::Key_View_ShowAnalogMinorGrid, state ? true : false);
+}
+
+void Settings::on_view_showHoverMarker_changed(int state)
+{
+	GlobalSettings settings;
+	settings.setValue(GlobalSettings::Key_View_ShowHoverMarker, state ? true : false);
+}
+
+void Settings::on_view_snapDistance_changed(int value)
+{
+	GlobalSettings settings;
+	settings.setValue(GlobalSettings::Key_View_SnapDistance, value);
 }
 
 void Settings::on_view_conversionThresholdDispMode_changed(int state)
@@ -613,11 +591,19 @@ void Settings::on_view_defaultLogicHeight_changed(int value)
 	settings.setValue(GlobalSettings::Key_View_DefaultLogicHeight, value);
 }
 
+#ifdef ENABLE_DECODE
 void Settings::on_dec_initialStateConfigurable_changed(int state)
 {
 	GlobalSettings settings;
 	settings.setValue(GlobalSettings::Key_Dec_InitialStateConfigurable, state ? true : false);
 }
+
+void Settings::on_dec_exportFormat_changed(const QString &text)
+{
+	GlobalSettings settings;
+	settings.setValue(GlobalSettings::Key_Dec_ExportFormat, text);
+}
+#endif
 
 void Settings::on_log_logLevel_changed(int value)
 {

@@ -207,13 +207,23 @@ void Session::save_settings(QSettings &settings) const
 		}
 
 		shared_ptr<devices::SessionFile> sessionfile_device =
-			dynamic_pointer_cast< devices::SessionFile >(device_);
+			dynamic_pointer_cast<devices::SessionFile>(device_);
 
 		if (sessionfile_device) {
 			settings.setValue("device_type", "sessionfile");
 			settings.beginGroup("device");
 			settings.setValue("filename", QString::fromStdString(
 				sessionfile_device->full_name()));
+			settings.endGroup();
+		}
+
+		shared_ptr<devices::InputFile> inputfile_device =
+			dynamic_pointer_cast<devices::InputFile>(device_);
+
+		if (inputfile_device) {
+			settings.setValue("device_type", "inputfile");
+			settings.beginGroup("device");
+			inputfile_device->save_meta_to_settings(settings);
 			settings.endGroup();
 		}
 
@@ -290,21 +300,34 @@ void Session::restore_settings(QSettings &settings)
 		settings.endGroup();
 	}
 
-	if (device_type == "sessionfile") {
-		settings.beginGroup("device");
-		QString filename = settings.value("filename").toString();
-		settings.endGroup();
+	if ((device_type == "sessionfile") || (device_type == "inputfile")) {
+		if (device_type == "sessionfile") {
+			settings.beginGroup("device");
+			QString filename = settings.value("filename").toString();
+			settings.endGroup();
 
-		if (QFileInfo(filename).isReadable()) {
-			device = make_shared<devices::SessionFile>(device_manager_.context(),
-				filename.toStdString());
+			if (QFileInfo(filename).isReadable()) {
+				device = make_shared<devices::SessionFile>(device_manager_.context(),
+					filename.toStdString());
+			}
+		}
+
+		if (device_type == "inputfile") {
+			settings.beginGroup("device");
+			device = make_shared<devices::InputFile>(device_manager_.context(),
+				settings);
+			settings.endGroup();
+		}
+
+		if (device) {
 			set_device(device);
 
 			start_capture([](QString infoMessage) {
 				// TODO Emulate noquote()
 				qDebug() << "Session error:" << infoMessage; });
 
-			set_name(QFileInfo(filename).fileName());
+			set_name(QString::fromStdString(
+				dynamic_pointer_cast<devices::File>(device)->display_name(device_manager_)));
 		}
 	}
 
@@ -374,12 +397,13 @@ void Session::set_device(shared_ptr<devices::Device> device)
 	name_ = default_name_;
 	name_changed();
 
-	// Remove all stored data
+	// Remove all stored data and reset all views
 	for (shared_ptr<views::ViewBase> view : views_) {
 		view->clear_signals();
 #ifdef ENABLE_DECODE
 		view->clear_decode_signals();
 #endif
+		view->reset_view_state();
 	}
 	for (const shared_ptr<data::SignalData> d : all_signal_data_)
 		d->clear();
@@ -511,6 +535,10 @@ void Session::load_file(QString file_name,
 	const QString errorMessage(
 		QString("Failed to load file %1").arg(file_name));
 
+	// In the absence of a caller's format spec, try to auto detect.
+	// Assume "sigrok session file" upon lookup miss.
+	if (!format)
+		format = device_manager_.context()->input_format_match(file_name.toStdString());
 	try {
 		if (format)
 			set_device(shared_ptr<devices::Device>(
@@ -922,7 +950,11 @@ void Session::sample_thread_proc(function<void (const QString)> error_handler)
 	if (!device_)
 		return;
 
-	cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
+	try {
+		cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
+	} catch (Error& e) {
+		cur_samplerate_ = 0;
+	}
 
 	out_of_memory_ = false;
 
@@ -1044,15 +1076,10 @@ void Session::feed_in_meta(shared_ptr<Meta> meta)
 	for (auto entry : meta->config()) {
 		switch (entry.first->id()) {
 		case SR_CONF_SAMPLERATE:
-			// We can't rely on the header to always contain the sample rate,
-			// so in case it's supplied via a meta packet, we use it.
-			if (!cur_samplerate_)
-				cur_samplerate_ = g_variant_get_uint64(entry.second.gobj());
-
-			/// @todo handle samplerate changes
+			cur_samplerate_ = g_variant_get_uint64(entry.second.gobj());
 			break;
 		default:
-			// Unknown metadata is not an error.
+			qDebug() << "Received meta data key" << entry.first->id() << ", ignoring.";
 			break;
 		}
 	}
@@ -1138,7 +1165,11 @@ void Session::feed_in_logic(shared_ptr<Logic> logic)
 	}
 
 	if (!cur_samplerate_)
-		cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
+		try {
+			cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
+		} catch (Error& e) {
+			// Do nothing
+		}
 
 	lock_guard<recursive_mutex> lock(data_mutex_);
 
@@ -1175,16 +1206,18 @@ void Session::feed_in_analog(shared_ptr<Analog> analog)
 	}
 
 	if (!cur_samplerate_)
-		cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
+		try {
+			cur_samplerate_ = device_->read_config<uint64_t>(ConfigKey::SAMPLERATE);
+		} catch (Error& e) {
+			// Do nothing
+		}
 
 	lock_guard<recursive_mutex> lock(data_mutex_);
 
 	const vector<shared_ptr<Channel>> channels = analog->channels();
-	const unsigned int channel_count = channels.size();
-	const size_t sample_count = analog->num_samples() / channel_count;
 	bool sweep_beginning = false;
 
-	unique_ptr<float[]> data(new float[analog->num_samples()]);
+	unique_ptr<float[]> data(new float[analog->num_samples() * channels.size()]);
 	analog->get_data_as_float(data.get());
 
 	if (signalbases_.empty())
@@ -1226,8 +1259,8 @@ void Session::feed_in_analog(shared_ptr<Analog> analog)
 		assert(segment);
 
 		// Append the samples in the segment
-		segment->append_interleaved_samples(channel_data++, sample_count,
-			channel_count);
+		segment->append_interleaved_samples(channel_data++, analog->num_samples(),
+			channels.size());
 	}
 
 	if (sweep_beginning) {

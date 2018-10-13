@@ -60,11 +60,60 @@ Trace::Trace(shared_ptr<data::SignalBase> channel) :
 		this, SLOT(on_name_changed(const QString&)));
 	connect(channel.get(), SIGNAL(color_changed(const QColor&)),
 		this, SLOT(on_color_changed(const QColor&)));
+
+	GlobalSettings::add_change_handler(this);
+
+	GlobalSettings settings;
+	show_hover_marker_ =
+		settings.value(GlobalSettings::Key_View_ShowHoverMarker).toBool();
+}
+
+Trace::~Trace()
+{
+	GlobalSettings::remove_change_handler(this);
 }
 
 shared_ptr<data::SignalBase> Trace::base() const
 {
 	return base_;
+}
+
+bool Trace::is_selectable(QPoint pos) const
+{
+	// True if the header was clicked, false if the trace area was clicked
+	const View *view = owner_->view();
+	assert(view);
+
+	return (pos.x() <= view->header_width());
+}
+
+bool Trace::is_draggable(QPoint pos) const
+{
+	// While the header label that belongs to this trace is draggable,
+	// the trace itself shall not be. Hence we return true if the header
+	// was clicked and false if the trace area was clicked
+	const View *view = owner_->view();
+	assert(view);
+
+	return (pos.x() <= view->header_width());
+}
+
+void Trace::set_segment_display_mode(SegmentDisplayMode mode)
+{
+	segment_display_mode_ = mode;
+
+	if (owner_)
+		owner_->row_item_appearance_changed(true, true);
+}
+
+void Trace::on_setting_changed(const QString &key, const QVariant &value)
+{
+	if (key == GlobalSettings::Key_View_ShowHoverMarker)
+		show_hover_marker_ = value.toBool();
+
+	// Force a repaint since many options alter the way traces look
+	if (owner_)
+		owner_->row_item_appearance_changed(false, true);
 }
 
 void Trace::paint_label(QPainter &p, const QRect &rect, bool hover)
@@ -124,9 +173,9 @@ void Trace::paint_label(QPainter &p, const QRect &rect, bool hover)
 		Qt::AlignCenter | Qt::AlignVCenter, base_->name());
 }
 
-QMenu* Trace::create_context_menu(QWidget *parent)
+QMenu* Trace::create_header_context_menu(QWidget *parent)
 {
-	QMenu *const menu = ViewItem::create_context_menu(parent);
+	QMenu *const menu = ViewItem::create_header_context_menu(parent);
 
 	return menu;
 }
@@ -162,6 +211,20 @@ QRectF Trace::label_rect(const QRectF &rect) const
 		label_size.height());
 }
 
+QRectF Trace::hit_box_rect(const ViewItemPaintParams &pp) const
+{
+	// This one is only for the trace itself, excluding the header area
+	const View *view = owner_->view();
+	assert(view);
+
+	pair<int, int> extents = v_extents();
+	const int top = pp.top() + get_visual_y() + extents.first;
+	const int height = extents.second - extents.first;
+
+	return QRectF(pp.left() + view->header_width(), top,
+		pp.width() - view->header_width(), height);
+}
+
 void Trace::set_current_segment(const int segment)
 {
 	current_segment_ = segment;
@@ -170,6 +233,14 @@ void Trace::set_current_segment(const int segment)
 int Trace::get_current_segment() const
 {
 	return current_segment_;
+}
+
+void Trace::hover_point_changed(const QPoint &hp)
+{
+	(void)hp;
+
+	if (owner_)
+		owner_->row_item_appearance_changed(false, true);
 }
 
 void Trace::paint_back(QPainter &p, ViewItemPaintParams &pp)
@@ -213,6 +284,26 @@ void Trace::add_color_option(QWidget *parent, QFormLayout *form)
 	form->addRow(tr("Color"), color_button);
 }
 
+void Trace::paint_hover_marker(QPainter &p)
+{
+	const View *view = owner_->view();
+	assert(view);
+
+	const int x = view->hover_point().x();
+
+	if (x == -1)
+		return;
+
+	p.setPen(QPen(QColor(Qt::lightGray)));
+
+	const pair<int, int> extents = v_extents();
+
+	p.setRenderHint(QPainter::Antialiasing, false);
+	p.drawLine(x, get_visual_y() + extents.first,
+		x, get_visual_y() + extents.second);
+	p.setRenderHint(QPainter::Antialiasing, true);
+}
+
 void Trace::create_popup_form()
 {
 	// Clear the layout
@@ -242,14 +333,6 @@ void Trace::populate_popup_form(QWidget *parent, QFormLayout *form)
 	form->addRow(tr("Name"), name_edit);
 
 	add_color_option(parent, form);
-}
-
-void Trace::set_segment_display_mode(SegmentDisplayMode mode)
-{
-	segment_display_mode_ = mode;
-
-	if (owner_)
-		owner_->row_item_appearance_changed(true, true);
 }
 
 void Trace::on_name_changed(const QString &text)

@@ -85,8 +85,8 @@ pair<int, int> TraceGroup::v_extents() const
 void TraceGroup::paint_label(QPainter &p, const QRect &rect, bool hover)
 {
 	const QRectF r = label_rect(rect).adjusted(
-		LineThickness / 2, LineThickness / 2,
-		-LineThickness / 2, -LineThickness / 2);
+		LineThickness / 2.0, LineThickness / 2.0,
+		-LineThickness / 2.0, -LineThickness / 2.0);
 
 	// Paint the label
 	const QPointF points[] = {
@@ -133,7 +133,7 @@ bool TraceGroup::pt_in_label_rect(int left, int right, const QPoint &point)
 	return false;
 }
 
-QMenu* TraceGroup::create_context_menu(QWidget *parent)
+QMenu* TraceGroup::create_header_context_menu(QWidget *parent)
 {
 	QMenu *const menu = new QMenu(parent);
 

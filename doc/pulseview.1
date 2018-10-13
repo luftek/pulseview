@@ -47,7 +47,7 @@ Specify the capture device to connect to. If the
 option is not supplied, PulseView attempts to re-connect to the
 most recently used device, or auto-detect available devices.
 .TP
-.BR "\-D, \-\-no\-scan "
+.BR "\-D, \-\-dont\-scan "
 Usually PulseView automatically scans all drivers to find suitable
 devices during program startup. This option disables the auto-scan.
 Users can either specify the
@@ -68,9 +68,6 @@ Specifies the format of the input file to be loaded.
 Prevents the previously used sessions to be restored from settings storage.
 This is useful if you want only a single session with the file given on the
 command line instead of restoring all previously used sessions as well.
-.TP
-.BR "\-s, \-\-log-to-stdout"
-Don't log to PulseView's internal log window, but rather to stdout.
 .SH "KEYBOARD SHORTCUTS"
 .TP
 .B "f"

@@ -21,10 +21,12 @@
 #define PULSEVIEW_PV_SETTINGS_HPP
 
 #include <QCheckBox>
+#include <QColor>
 #include <QDialog>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QStackedWidget>
+#include <QLineEdit>
 
 namespace pv {
 
@@ -46,7 +48,7 @@ public:
 	QPlainTextEdit *create_log_view() const;
 
 	QWidget *get_view_settings_form(QWidget *parent) const;
-	QWidget *get_decoder_settings_form(QWidget *parent) const;
+	QWidget *get_decoder_settings_form(QWidget *parent);
 	QWidget *get_about_page(QWidget *parent) const;
 	QWidget *get_logging_page(QWidget *parent) const;
 
@@ -61,11 +63,18 @@ private Q_SLOTS:
 	void on_view_coloredBG_changed(int state);
 	void on_view_stickyScrolling_changed(int state);
 	void on_view_showSamplingPoints_changed(int state);
+	void on_view_fillSignalHighAreas_changed(int state);
+	void on_view_fillSignalHighAreaColor_changed(QColor color);
 	void on_view_showAnalogMinorGrid_changed(int state);
+	void on_view_showHoverMarker_changed(int state);
+	void on_view_snapDistance_changed(int value);
 	void on_view_conversionThresholdDispMode_changed(int state);
 	void on_view_defaultDivHeight_changed(int value);
 	void on_view_defaultLogicHeight_changed(int value);
+#ifdef ENABLE_DECODE
 	void on_dec_initialStateConfigurable_changed(int state);
+	void on_dec_exportFormat_changed(const QString &text);
+#endif
 	void on_log_logLevel_changed(int value);
 	void on_log_bufferSize_changed(int value);
 	void on_log_saveToFile_clicked(bool checked);
@@ -75,6 +84,10 @@ private:
 	DeviceManager &device_manager_;
 	PageListWidget *page_list;
 	QStackedWidget *pages;
+
+#ifdef ENABLE_DECODE
+	QLineEdit *ann_export_format_;
+#endif
 
 	QPlainTextEdit *log_view_;
 };

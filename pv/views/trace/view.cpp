@@ -38,6 +38,7 @@
 #include <QApplication>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QScrollBar>
 #include <QVBoxLayout>
@@ -78,6 +79,7 @@ using std::max;
 using std::make_pair;
 using std::make_shared;
 using std::min;
+using std::numeric_limits;
 using std::pair;
 using std::set;
 using std::set_difference;
@@ -124,31 +126,11 @@ bool CustomScrollArea::viewportEvent(QEvent *event)
 
 View::View(Session &session, bool is_main_view, QWidget *parent) :
 	ViewBase(session, is_main_view, parent),
+
+	// Note: Place defaults in View::reset_view_state(), not here
 	splitter_(new QSplitter()),
-	segment_display_mode_(Trace::ShowLastSegmentOnly),
-	segment_selectable_(false),
-	scale_(1e-3),
-	offset_(0),
-	ruler_offset_(0),
-	updating_scroll_(false),
-	settings_restored_(false),
-	header_was_shrunk_(false),
-	sticky_scrolling_(false), // Default setting is set in MainWindow::setup_ui()
-	always_zoom_to_fit_(false),
-	tick_period_(0),
-	tick_prefix_(pv::util::SIPrefix::yocto),
-	tick_precision_(0),
-	time_unit_(util::TimeUnit::Time),
-	show_cursors_(false),
-	cursors_(new CursorPair(*this)),
-	next_flag_text_('A'),
-	trigger_markers_(),
-	hover_point_(-1, -1),
-	scroll_needs_defaults_(true),
-	saved_v_offset_(0),
-	scale_at_acq_start_(0),
-	offset_at_acq_start_(0),
-	suppress_zoom_to_fit_after_acq_(false)
+	header_was_shrunk_(false),  // The splitter remains unchanged after a reset, so this goes here
+	sticky_scrolling_(false)  // Default setting is set in MainWindow::setup_ui()
 {
 	QVBoxLayout *root_layout = new QVBoxLayout(this);
 	root_layout->setContentsMargins(0, 0, 0, 0);
@@ -197,6 +179,7 @@ View::View(Session &session, bool is_main_view, QWidget *parent) :
 	// Set up settings and event handlers
 	GlobalSettings settings;
 	colored_bg_ = settings.value(GlobalSettings::Key_View_ColoredBG).toBool();
+	snap_distance_ = settings.value(GlobalSettings::Key_View_SnapDistance).toInt();
 
 	GlobalSettings::add_change_handler(this);
 
@@ -230,16 +213,50 @@ View::View(Session &session, bool is_main_view, QWidget *parent) :
 	ruler_->raise();
 	header_->raise();
 
-	// Update the zoom state
-	calculate_tick_spacing();
-
-	// Make sure the standard bar's segment selector is in sync
-	set_segment_display_mode(segment_display_mode_);
+	reset_view_state();
 }
 
 View::~View()
 {
 	GlobalSettings::remove_change_handler(this);
+}
+
+void View::reset_view_state()
+{
+	ViewBase::reset_view_state();
+
+	segment_display_mode_ = Trace::ShowLastSegmentOnly;
+	segment_selectable_ = false;
+	scale_ = 1e-3;
+	offset_ = 0;
+	ruler_offset_ = 0;
+	updating_scroll_ = false;
+	settings_restored_ = false;
+	always_zoom_to_fit_ = false;
+	tick_period_ = 0;
+	tick_prefix_ = pv::util::SIPrefix::yocto;
+	tick_precision_ = 0;
+	time_unit_ = util::TimeUnit::Time;
+	show_cursors_ = false;
+	cursors_ = make_shared<CursorPair>(*this);
+	next_flag_text_ = 'A';
+	trigger_markers_.clear();
+	hover_point_ = QPoint(-1, -1);
+	scroll_needs_defaults_ = true;
+	saved_v_offset_ = 0;
+	scale_at_acq_start_ = 0;
+	offset_at_acq_start_ = 0;
+	suppress_zoom_to_fit_after_acq_ = false;
+
+	show_cursors_ = false;
+	cursor_state_changed(show_cursors_);
+	flags_.clear();
+
+	// Update the zoom state
+	calculate_tick_spacing();
+
+	// Make sure the standard bar's segment selector is in sync
+	set_segment_display_mode(segment_display_mode_);
 }
 
 Session& View::session()
@@ -305,6 +322,11 @@ void View::remove_decode_signal(shared_ptr<data::DecodeSignal> signal)
 }
 #endif
 
+shared_ptr<Signal> View::get_signal_under_mouse_cursor() const
+{
+	return signal_under_mouse_cursor_;
+}
+
 View* View::view()
 {
 	return this;
@@ -367,10 +389,13 @@ void View::restore_settings(QSettings &settings)
 		stringstream ss;
 		ss << settings.value("ruler_shift").toString().toStdString();
 
-		boost::archive::text_iarchive ia(ss);
-		ia >> boost::serialization::make_nvp("ruler_shift", shift);
-
-		ruler_shift_ = shift;
+		try {
+			boost::archive::text_iarchive ia(ss);
+			ia >> boost::serialization::make_nvp("ruler_shift", shift);
+			ruler_shift_ = shift;
+		} catch (boost::archive::archive_exception&) {
+			qDebug() << "Could not restore the view ruler shift";
+		}
 	}
 
 	if (settings.contains("offset")) {
@@ -378,11 +403,14 @@ void View::restore_settings(QSettings &settings)
 		stringstream ss;
 		ss << settings.value("offset").toString().toStdString();
 
-		boost::archive::text_iarchive ia(ss);
-		ia >> boost::serialization::make_nvp("offset", offset);
-
-		// This also updates ruler_offset_
-		set_offset(offset);
+		try {
+			boost::archive::text_iarchive ia(ss);
+			ia >> boost::serialization::make_nvp("offset", offset);
+			// This also updates ruler_offset_
+			set_offset(offset);
+		} catch (boost::archive::archive_exception&) {
+			qDebug() << "Could not restore the view offset";
+		}
 	}
 
 	if (settings.contains("splitter_state"))
@@ -416,9 +444,12 @@ vector< shared_ptr<TimeItem> > View::time_items() const
 {
 	const vector<shared_ptr<Flag>> f(flags());
 	vector<shared_ptr<TimeItem>> items(f.begin(), f.end());
-	items.push_back(cursors_);
-	items.push_back(cursors_->first());
-	items.push_back(cursors_->second());
+
+	if (cursors_) {
+		items.push_back(cursors_);
+		items.push_back(cursors_->first());
+		items.push_back(cursors_->second());
+	}
 
 	for (auto trigger_marker : trigger_markers_)
 		items.push_back(trigger_marker);
@@ -596,8 +627,6 @@ Trace::SegmentDisplayMode View::segment_display_mode() const
 
 void View::set_segment_display_mode(Trace::SegmentDisplayMode mode)
 {
-	trigger_markers_.clear();
-
 	segment_display_mode_ = mode;
 
 	for (shared_ptr<Signal> signal : signals_)
@@ -675,23 +704,6 @@ void View::zoom_fit(bool gui_state)
 
 	const Timestamp scale = max(min(delta / w, MaxScale), MinScale);
 	set_scale_offset(scale.convert_to<double>(), extents.first);
-}
-
-void View::zoom_one_to_one()
-{
-	using pv::data::SignalData;
-
-	// Make a set of all the visible data objects
-	set< shared_ptr<SignalData> > visible_data = get_visible_data();
-	if (visible_data.empty())
-		return;
-
-	assert(viewport_);
-	const int w = viewport_->width();
-	if (w <= 0)
-		return;
-
-	set_zoom(1.0 / session_.get_samplerate(), w / 2);
 }
 
 void View::set_scale_offset(double scale, const Timestamp& offset)
@@ -793,17 +805,21 @@ bool View::cursors_shown() const
 void View::show_cursors(bool show)
 {
 	show_cursors_ = show;
+	cursor_state_changed(show);
 	ruler_->update();
 	viewport_->update();
 }
 
 void View::centre_cursors()
 {
-	const double time_width = scale_ * viewport_->width();
-	cursors_->first()->set_time(offset_ + time_width * 0.4);
-	cursors_->second()->set_time(offset_ + time_width * 0.6);
-	ruler_->update();
-	viewport_->update();
+	if (cursors_) {
+		const double time_width = scale_ * viewport_->width();
+		cursors_->first()->set_time(offset_ + time_width * 0.4);
+		cursors_->second()->set_time(offset_ + time_width * 0.6);
+
+		ruler_->update();
+		viewport_->update();
+	}
 }
 
 shared_ptr<CursorPair> View::cursors() const
@@ -844,6 +860,107 @@ const QPoint& View::hover_point() const
 	return hover_point_;
 }
 
+int64_t View::get_nearest_level_change(const QPoint &p)
+{
+	// Is snapping disabled?
+	if (snap_distance_ == 0)
+		return -1;
+
+	struct entry_t {
+		entry_t(shared_ptr<Signal> s) :
+			signal(s), delta(numeric_limits<int64_t>::max()), sample(-1), is_dense(false) {}
+		shared_ptr<Signal> signal;
+		int64_t delta;
+		int64_t sample;
+		bool is_dense;
+	};
+
+	vector<entry_t> list;
+
+	// Create list of signals to consider
+	if (signal_under_mouse_cursor_)
+		list.emplace_back(signal_under_mouse_cursor_);
+	else
+		for (shared_ptr<Signal> s : signals_) {
+			if (!s->enabled())
+				continue;
+
+			list.emplace_back(s);
+		}
+
+	// Get data for listed signals
+	for (entry_t &e : list) {
+		// Calculate sample number from cursor position
+		const double samples_per_pixel = e.signal->base()->get_samplerate() * scale();
+		const int64_t x_offset = offset().convert_to<double>() / scale();
+		const int64_t sample_num = max(((x_offset + p.x()) * samples_per_pixel), 0.0);
+
+		vector<data::LogicSegment::EdgePair> edges =
+			e.signal->get_nearest_level_changes(sample_num);
+
+		if (edges.empty())
+			continue;
+
+		// Check first edge
+		const int64_t first_sample_delta = abs(sample_num - edges.front().first);
+		const int64_t first_delta = first_sample_delta / samples_per_pixel;
+		e.delta = first_delta;
+		e.sample = edges.front().first;
+
+		// Check second edge if available
+		if (edges.size() == 2) {
+			// Note: -1 because this is usually the right edge and sample points are left-aligned
+			const int64_t second_sample_delta = abs(sample_num - edges.back().first - 1);
+			const int64_t second_delta = second_sample_delta / samples_per_pixel;
+
+			// If both edges are too close, we mark this signal as being dense
+			if ((first_delta + second_delta) <= snap_distance_)
+				e.is_dense = true;
+
+			if (second_delta < first_delta) {
+				e.delta = second_delta;
+				e.sample = edges.back().first;
+			}
+		}
+	}
+
+	// Look for the best match: non-dense first, then dense
+	entry_t *match = nullptr;
+
+	for (entry_t &e : list) {
+		if (e.delta > snap_distance_ || e.is_dense)
+			continue;
+
+		if (match) {
+			if (e.delta < match->delta)
+				match = &e;
+		} else
+			match = &e;
+	}
+
+	if (!match) {
+		for (entry_t &e : list) {
+			if (!e.is_dense)
+				continue;
+
+			if (match) {
+				if (e.delta < match->delta)
+					match = &e;
+			} else
+				match = &e;
+		}
+	}
+
+	if (match) {
+		// Somewhat ugly hack to make TimeItem::drag_by() work
+		signal_under_mouse_cursor_ = match->signal;
+
+		return match->sample;
+	}
+
+	return -1;
+}
+
 void View::restack_all_trace_tree_items()
 {
 	// Make a list of owners that is sorted from deepest first
@@ -866,10 +983,20 @@ void View::restack_all_trace_tree_items()
 		i->animate_to_layout_v_offset();
 }
 
+int View::header_width() const
+{
+	 return header_->extended_size_hint().width();
+}
+
 void View::on_setting_changed(const QString &key, const QVariant &value)
 {
 	if (key == GlobalSettings::Key_View_TriggerIsZeroTime)
 		on_settingViewTriggerIsZeroTime_changed(value);
+
+	if (key == GlobalSettings::Key_View_SnapDistance) {
+		GlobalSettings settings;
+		snap_distance_ = settings.value(GlobalSettings::Key_View_SnapDistance).toInt();
+	}
 }
 
 void View::trigger_event(int segment_id, util::Timestamp location)
@@ -1045,8 +1172,10 @@ void View::update_scroll()
 		vscrollbar->setRange(extents.first - areaSize.height(),
 			extents.second);
 
-	if (scroll_needs_defaults_)
+	if (scroll_needs_defaults_) {
 		set_scroll_default();
+		scroll_needs_defaults_ = false;
+	}
 }
 
 void View::reset_scroll()
@@ -1076,12 +1205,11 @@ void View::set_scroll_default()
 void View::determine_if_header_was_shrunk()
 {
 	const int header_pane_width = splitter_->sizes().front();
-	const int header_width = header_->extended_size_hint().width();
 
 	// Allow for a slight margin of error so that we also accept
 	// slight differences when e.g. a label name change increased
 	// the overall width
-	header_was_shrunk_ = (header_pane_width < (header_width - 10));
+	header_was_shrunk_ = (header_pane_width < (header_width() - 10));
 }
 
 void View::resize_header_to_fit()
@@ -1200,7 +1328,10 @@ bool View::eventFilter(QObject *object, QEvent *event)
 		if (object == viewport_)
 			hover_point_ = mouse_event->pos();
 		else if (object == ruler_)
-			hover_point_ = QPoint(mouse_event->x(), 0);
+			// Adjust the hover point's y coordinate so that it's relative to
+			// the top of the viewport. The result may be negative.
+			hover_point_ = QPoint(mouse_event->pos().x(),
+				mouse_event->pos().y() - ruler_->sizeHint().height());
 		else if (object == header_)
 			hover_point_ = QPoint(0, mouse_event->y());
 		else
@@ -1241,6 +1372,19 @@ bool View::eventFilter(QObject *object, QEvent *event)
 	return QObject::eventFilter(object, event);
 }
 
+void View::contextMenuEvent(QContextMenuEvent *event)
+{
+	QPoint pos = event->pos() - QPoint(0, ruler_->sizeHint().height());
+
+	const shared_ptr<ViewItem> r = viewport_->get_mouse_over_item(pos);
+	if (!r)
+		return;
+
+	QMenu *menu = r->create_view_context_menu(this, pos);
+	if (menu)
+		menu->popup(event->globalPos());
+}
+
 void View::resizeEvent(QResizeEvent* event)
 {
 	// Only adjust the top margin if we shrunk vertically
@@ -1252,11 +1396,24 @@ void View::resizeEvent(QResizeEvent* event)
 
 void View::update_hover_point()
 {
+	// Determine signal that the mouse cursor is hovering over
+	signal_under_mouse_cursor_.reset();
+	for (shared_ptr<Signal> s : signals_) {
+		const pair<int, int> extents = s->v_extents();
+		const int top = s->get_visual_y() + extents.first;
+		const int btm = s->get_visual_y() + extents.second;
+		if ((hover_point_.y() >= top) && (hover_point_.y() <= btm)
+			&& s->base()->enabled())
+			signal_under_mouse_cursor_ = s;
+	}
+
+	// Update all trace tree items
 	const vector<shared_ptr<TraceTreeItem>> trace_tree_items(
 		list_by_type<TraceTreeItem>());
 	for (shared_ptr<TraceTreeItem> r : trace_tree_items)
 		r->hover_point_changed(hover_point_);
 
+	// Notify any other listeners
 	hover_point_changed(hover_point_);
 }
 
@@ -1287,6 +1444,7 @@ void View::extents_changed(bool horz, bool vert)
 		(horz ? TraceTreeItemHExtentsChanged : 0) |
 		(vert ? TraceTreeItemVExtentsChanged : 0);
 
+	lazy_event_handler_.stop();
 	lazy_event_handler_.start();
 }
 

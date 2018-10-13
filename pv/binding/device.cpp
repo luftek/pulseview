@@ -97,6 +97,8 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 		case SR_CONF_TRIGGER_SLOPE:
 		case SR_CONF_COUPLING:
 		case SR_CONF_CLOCK_EDGE:
+		case SR_CONF_DATA_SOURCE:
+		case SR_CONF_EXTERNAL_CLOCK_SOURCE:
 			bind_enum(name, "", key, capabilities, get, set);
 			break;
 
@@ -104,6 +106,7 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 		case SR_CONF_EXTERNAL_CLOCK:
 		case SR_CONF_RLE:
 		case SR_CONF_POWER_OFF:
+		case SR_CONF_AVERAGING:
 			bind_bool(name, "", get, set);
 			break;
 
@@ -124,6 +127,13 @@ Device::Device(shared_ptr<sigrok::Configurable> configurable) :
 				bind_enum(name, "", key, capabilities, get, set, print_probe_factor);
 			else
 				bind_int(name, "", "", pair<int64_t, int64_t>(1, 500), get, set);
+			break;
+
+		case SR_CONF_AVG_SAMPLES:
+			if (capabilities.count(Capability::LIST))
+				bind_enum(name, "", key, capabilities, get, set, print_averages);
+			else
+				bind_int(name, "", "", pair<int64_t, int64_t>(0, INT32_MAX), get, set);
 			break;
 
 		default:
@@ -203,6 +213,13 @@ QString Device::print_probe_factor(Glib::VariantBase gvar)
 	uint64_t factor;
 	factor = g_variant_get_uint64(gvar.gobj());
 	return QString("%1x").arg(factor);
+}
+
+QString Device::print_averages(Glib::VariantBase gvar)
+{
+	uint64_t avg;
+	avg = g_variant_get_uint64(gvar.gobj());
+	return QString("%1").arg(avg);
 }
 
 }  // namespace binding

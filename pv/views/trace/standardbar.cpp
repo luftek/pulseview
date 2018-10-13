@@ -41,7 +41,6 @@ StandardBar::StandardBar(Session &session, QWidget *parent,
 	action_view_zoom_in_(new QAction(this)),
 	action_view_zoom_out_(new QAction(this)),
 	action_view_zoom_fit_(new QAction(this)),
-	action_view_zoom_one_to_one_(new QAction(this)),
 	action_view_show_cursors_(new QAction(this)),
 	segment_display_mode_selector_(new QToolButton(this)),
 	action_sdm_last_(new QAction(this)),
@@ -74,13 +73,6 @@ StandardBar::StandardBar(Session &session, QWidget *parent,
 	action_view_zoom_fit_->setShortcut(QKeySequence(Qt::Key_F));
 	connect(action_view_zoom_fit_, SIGNAL(triggered(bool)),
 		this, SLOT(on_actionViewZoomFit_triggered(bool)));
-
-	action_view_zoom_one_to_one_->setText(tr("Zoom to O&ne-to-One"));
-	action_view_zoom_one_to_one_->setIcon(QIcon::fromTheme("zoom-original",
-		QIcon(":/icons/zoom-original.png")));
-	action_view_zoom_one_to_one_->setShortcut(QKeySequence(Qt::Key_O));
-	connect(action_view_zoom_one_to_one_, SIGNAL(triggered(bool)),
-		this, SLOT(on_actionViewZoomOneToOne_triggered()));
 
 	action_view_show_cursors_->setCheckable(true);
 	action_view_show_cursors_->setIcon(QIcon(":/icons/show-cursors.svg"));
@@ -133,6 +125,9 @@ StandardBar::StandardBar(Session &session, QWidget *parent,
 	connect(view_, SIGNAL(always_zoom_to_fit_changed(bool)),
 		this, SLOT(on_always_zoom_to_fit_changed(bool)));
 
+	connect(view_, SIGNAL(cursor_state_changed(bool)),
+		this, SLOT(on_cursor_state_changed(bool)));
+
 	if (add_default_widgets)
 		add_toolbar_widgets();
 }
@@ -148,7 +143,6 @@ void StandardBar::add_toolbar_widgets()
 	addAction(action_view_zoom_in_);
 	addAction(action_view_zoom_out_);
 	addAction(action_view_zoom_fit_);
-	addAction(action_view_zoom_one_to_one_);
 	addSeparator();
 	addAction(action_view_show_cursors_);
 	multi_segment_actions_.push_back(addSeparator());
@@ -184,11 +178,6 @@ QAction* StandardBar::action_view_zoom_fit() const
 	return action_view_zoom_fit_;
 }
 
-QAction* StandardBar::action_view_zoom_one_to_one() const
-{
-	return action_view_zoom_one_to_one_;
-}
-
 QAction* StandardBar::action_view_show_cursors() const
 {
 	return action_view_show_cursors_;
@@ -209,14 +198,10 @@ void StandardBar::on_actionViewZoomFit_triggered(bool checked)
 	view_->zoom_fit(checked);
 }
 
-void StandardBar::on_actionViewZoomOneToOne_triggered()
-{
-	view_->zoom_one_to_one();
-}
-
 void StandardBar::on_actionViewShowCursors_triggered()
 {
-	const bool show = !view_->cursors_shown();
+	const bool show = action_view_show_cursors_->isChecked();
+
 	if (show)
 		view_->centre_cursors();
 
@@ -306,6 +291,11 @@ void StandardBar::on_segment_display_mode_changed(int mode, bool segment_selecta
 	default:
 		break;
 	}
+}
+
+void StandardBar::on_cursor_state_changed(bool show)
+{
+	action_view_show_cursors_->setChecked(show);
 }
 
 } // namespace trace
